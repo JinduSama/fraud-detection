@@ -108,13 +108,35 @@ class FeatureExtractor:
         return max(runs) if runs else 0
 
     @staticmethod
+    def _normalize_iban(iban: str) -> str:
+        """Normalize IBAN by stripping whitespace and uppercasing."""
+        if pd.isna(iban):
+            return ""
+        return re.sub(r"\s+", "", str(iban)).upper()
+
+    @staticmethod
+    def _is_all_same(text: str) -> int:
+        if not text:
+            return 0
+        return int(len(set(text)) == 1)
+
+    @staticmethod
+    def _is_simple_sequence(text: str) -> int:
+        """Detects very simple ascending/descending digit sequences (weak heuristic)."""
+        if not text or not text.isdigit():
+            return 0
+        asc = "0123456789"
+        desc = asc[::-1]
+        return int(text in asc or text in desc)
+
+    @staticmethod
     def validate_iban(iban: str) -> int:
         """
         ISO 13616 (IBAN) mod-97 check. Returns 1 if valid else 0.
         """
         if pd.isna(iban):
             return 0
-        iban = re.sub(r"\s+", "", str(iban)).upper()
+        iban = FeatureExtractor._normalize_iban(iban)
         if not iban or not re.fullmatch(r"[A-Z0-9]+", iban):
             return 0
         if len(iban) < 15 or len(iban) > 34:
@@ -230,6 +252,20 @@ class FeatureExtractor:
             'iban_letters_count': 0,
             "iban_is_valid": 0,
             "iban_has_spaces": 0,
+
+            # General IBAN structure components
+            "iban_check_digits": -1,
+            "iban_country_is_de": 0,
+
+            # Germany-specific structure + heuristics
+            "iban_de_structure_ok": 0,
+            "iban_de_blz_all_same": 0,
+            "iban_de_account_all_same": 0,
+            "iban_de_blz_is_sequence": 0,
+            "iban_de_account_is_sequence": 0,
+            "iban_de_account_leading_zeros": 0,
+            "iban_de_blz_entropy": 0.0,
+            "iban_de_account_entropy": 0.0,
         }
         iban = str(row.get('iban', '')) if pd.notna(row.get('iban')) else ""
         if iban:
@@ -237,7 +273,38 @@ class FeatureExtractor:
             features['iban_digits_count'] = sum(c.isdigit() for c in iban)
             features['iban_letters_count'] = sum(c.isalpha() for c in iban)
             features["iban_has_spaces"] = int(bool(re.search(r"\s", iban)))
-            features["iban_is_valid"] = self.validate_iban(iban)
+
+            iban_norm = self._normalize_iban(iban)
+            features["iban_is_valid"] = self.validate_iban(iban_norm)
+
+            # Extract country + check digits if present
+            if len(iban_norm) >= 4:
+                country = iban_norm[:2]
+                features["iban_country_is_de"] = int(country == "DE")
+                try:
+                    features["iban_check_digits"] = int(iban_norm[2:4])
+                except Exception:
+                    features["iban_check_digits"] = -1
+
+            # Germany-specific checks: DE + 22 chars total and digits after DE
+            if features["iban_country_is_de"]:
+                # DE IBAN: 2 letters + 2 check digits + 8 BLZ + 10 account = 22
+                features["iban_de_structure_ok"] = int(bool(re.fullmatch(r"DE\d{20}", iban_norm)))
+                if len(iban_norm) == 22 and iban_norm.startswith("DE") and iban_norm[2:].isdigit():
+                    blz = iban_norm[4:12]
+                    account = iban_norm[12:22]
+
+                    features["iban_de_blz_all_same"] = self._is_all_same(blz)
+                    features["iban_de_account_all_same"] = self._is_all_same(account)
+
+                    features["iban_de_blz_is_sequence"] = self._is_simple_sequence(blz)
+                    features["iban_de_account_is_sequence"] = self._is_simple_sequence(account)
+
+                    features["iban_de_account_leading_zeros"] = len(account) - len(account.lstrip("0"))
+
+                    # Entropy as weak randomness/plausibility signal
+                    features["iban_de_blz_entropy"] = self.calculate_entropy(blz)
+                    features["iban_de_account_entropy"] = self.calculate_entropy(account)
         return features
     
     def _extract_phonetic_features(self, row: pd.Series) -> dict:

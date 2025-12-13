@@ -284,6 +284,11 @@ class DBSCANDetector(BaseDetector):
         processed = self.preprocessor.preprocess_dataframe(df)
         processed = self.preprocessor.create_blocking_key(processed)
         self._processed_df = processed
+
+        # This detector stores cluster membership as positional indices in the
+        # fitted dataset. It is not intended for out-of-sample prediction
+        # without refitting.
+        self._fit_n = len(df)
         
         # Define blocking columns
         block_columns = [
@@ -402,6 +407,12 @@ class DBSCANDetector(BaseDetector):
         """
         if not self._is_fitted:
             raise RuntimeError("Detector must be fitted before prediction")
+
+        if hasattr(self, "_fit_n") and len(df) != self._fit_n:
+            raise ValueError(
+                "DBSCANDetector.predict expects the same dataset size used during fit "
+                f"(fit_n={self._fit_n}, got_n={len(df)}). Re-fit to score a different dataset."
+            )
         
         n = len(df)
         scores = np.zeros(n)
@@ -442,18 +453,33 @@ class DBSCANDetector(BaseDetector):
         """Explain why a specific record was flagged."""
         if not self._is_fitted:
             raise RuntimeError("Detector must be fitted before explanation")
-        
-        predictions = self.predict(df.iloc[[idx]] if isinstance(idx, int) else df.loc[[idx]])
+
+        if hasattr(self, "_fit_n") and len(df) != self._fit_n:
+            raise ValueError(
+                "DBSCANDetector.explain expects the same dataset size used during fit "
+                f"(fit_n={self._fit_n}, got_n={len(df)})."
+            )
+
+        idx_label = idx
+        if isinstance(idx, int) and 0 <= idx < len(df):
+            idx_pos = idx
+        elif idx in df.index:
+            idx_pos = int(df.index.get_loc(idx))
+        else:
+            raise KeyError(f"Index {idx!r} not found in input DataFrame")
+
+        predictions_all = self.predict(df)
+        pred_row = predictions_all.loc[idx_label] if idx_label in predictions_all.index else predictions_all.iloc[idx_pos]
         
         # Find which cluster this record belongs to
         cluster_info = None
         for cluster in self._clusters:
-            if idx in cluster.record_indices:
+            if idx_pos in cluster.record_indices:
                 cluster_info = {
                     "cluster_id": cluster.cluster_id,
                     "cluster_size": len(cluster.record_indices),
                     "similarity_score": cluster.similarity_score,
-                    "other_members": [i for i in cluster.record_indices if i != idx][:5]
+                    "other_members": [i for i in cluster.record_indices if i != idx_pos][:5]
                 }
                 break
         
@@ -465,16 +491,16 @@ class DBSCANDetector(BaseDetector):
                 for field in self.field_weights.keys():
                     norm_field = f"{field}_normalized"
                     if norm_field in self._processed_df.columns:
-                        val1 = str(self._processed_df.iloc[idx][norm_field])
+                        val1 = str(self._processed_df.iloc[idx_pos][norm_field])
                         val2 = str(self._processed_df.iloc[other_idx][norm_field])
                         sim = 1.0 - self.distance_fn(val1, val2)
-                        field_similarities[field] = sim
+                        field_similarities[field] = float(sim)
         
         return {
-            "index": idx,
-            "score": float(predictions["score"].iloc[0]),
-            "is_fraud": bool(predictions["is_fraud"].iloc[0]),
-            "reason": predictions["reason"].iloc[0],
+            "index": idx_label,
+            "score": float(pred_row["score"]),
+            "is_fraud": bool(pred_row["is_fraud"]),
+            "reason": pred_row["reason"],
             "detector": self.name,
             "cluster_info": cluster_info,
             "field_similarities": field_similarities

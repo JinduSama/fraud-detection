@@ -59,6 +59,11 @@ class EnsembleDetector(BaseDetector):
         self._meta_classifier: Optional[LogisticRegression] = None
         self._detector_predictions: dict[str, pd.DataFrame] = {}
         self._optimal_threshold: float = 0.5
+
+        # Cache used by explain() to avoid recomputing full-data predictions
+        self._explain_cache_df_id: int | None = None
+        self._explain_cache_ensemble_pred: pd.DataFrame | None = None
+        self._explain_cache_detector_preds: dict[str, pd.DataFrame] = {}
     
     def fit(self, df: pd.DataFrame) -> "EnsembleDetector":
         """
@@ -347,30 +352,70 @@ class EnsembleDetector(BaseDetector):
         """Explain ensemble prediction for a specific record."""
         if not self._is_fitted:
             raise RuntimeError("Ensemble must be fitted before explanation")
-        
-        single_df = df.iloc[[idx]] if isinstance(idx, int) else df.loc[[idx]]
-        ensemble_pred = self.predict(single_df)
-        
-        # Get individual detector predictions
-        detector_results = {}
+
+        # NOTE: Some detectors (e.g., DBSCAN-based clustering) cannot safely
+        # predict on a single-row slice because they store cluster indices from
+        # the fit dataset. For explainability, compute predictions on the full
+        # dataset once and then select the requested record.
+
+        df_id = id(df)
+        if self._explain_cache_df_id != df_id:
+            all_predictions: list[pd.DataFrame] = []
+            all_weights: list[float] = []
+            detector_preds: dict[str, pd.DataFrame] = {}
+
+            for detector, weight in self.detectors:
+                preds = detector.predict(df)
+                all_predictions.append(preds)
+                all_weights.append(weight)
+                detector_preds[detector.name] = preds
+
+            if self.strategy == FusionStrategy.MAX:
+                ensemble_pred_all = self._fuse_max(all_predictions, all_weights, df.index)
+            elif self.strategy == FusionStrategy.WEIGHTED_AVG:
+                ensemble_pred_all = self._fuse_weighted_avg(all_predictions, all_weights, df.index)
+            elif self.strategy == FusionStrategy.VOTING:
+                ensemble_pred_all = self._fuse_voting(all_predictions, all_weights, df.index)
+            elif self.strategy == FusionStrategy.STACKING:
+                ensemble_pred_all = self._fuse_stacking(df, all_predictions)
+            else:
+                raise ValueError(f"Unknown fusion strategy: {self.strategy}")
+
+            self._explain_cache_df_id = df_id
+            self._explain_cache_ensemble_pred = ensemble_pred_all
+            self._explain_cache_detector_preds = detector_preds
+
+        assert self._explain_cache_ensemble_pred is not None
+
+        def _select_row(preds: pd.DataFrame, row_idx: int):
+            if row_idx in preds.index:
+                return preds.loc[row_idx]
+            if isinstance(row_idx, int) and 0 <= row_idx < len(preds):
+                return preds.iloc[row_idx]
+            raise KeyError(f"Index {row_idx!r} not found in predictions")
+
+        ensemble_row = _select_row(self._explain_cache_ensemble_pred, idx)
+
+        detector_results: dict[str, dict[str, object]] = {}
         for detector, weight in self.detectors:
-            preds = detector.predict(single_df)
+            preds_all = self._explain_cache_detector_preds[detector.name]
+            row = _select_row(preds_all, idx)
             detector_results[detector.name] = {
-                "score": float(preds["score"].iloc[0]),
-                "is_fraud": bool(preds["is_fraud"].iloc[0]),
-                "reason": preds["reason"].iloc[0],
-                "weight": weight
+                "score": float(row["score"]),
+                "is_fraud": bool(row["is_fraud"]),
+                "reason": row["reason"],
+                "weight": weight,
             }
-        
+
         return {
             "index": idx,
-            "score": float(ensemble_pred["score"].iloc[0]),
-            "is_fraud": bool(ensemble_pred["is_fraud"].iloc[0]),
-            "reason": ensemble_pred["reason"].iloc[0],
+            "score": float(ensemble_row["score"]),
+            "is_fraud": bool(ensemble_row["is_fraud"]),
+            "reason": ensemble_row["reason"],
             "detector": self.name,
             "strategy": self.strategy.value,
             "threshold": self._threshold,
-            "detector_results": detector_results
+            "detector_results": detector_results,
         }
     
     def get_detector_weights(self) -> dict[str, float]:
