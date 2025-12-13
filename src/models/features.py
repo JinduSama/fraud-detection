@@ -108,16 +108,35 @@ class FeatureExtractor:
         return features
     
     def _extract_complexity_features(self, row: pd.Series) -> dict:
-        """Extract complexity features (digits, special chars, etc.)."""
+        """Extract complexity features (digits, special chars, case, repeats, vowels)."""
         features = {}
         
-        for col in ['surname', 'first_name', 'email']:
+        for col in ['surname', 'first_name', 'email', 'address']:
             if col in row.index:
                 val = str(row[col]) if pd.notna(row[col]) else ""
                 
                 features[f'{col}_digit_count'] = sum(c.isdigit() for c in val)
                 features[f'{col}_special_count'] = sum(not c.isalnum() and c != ' ' for c in val)
                 features[f'{col}_upper_ratio'] = sum(c.isupper() for c in val) / max(len(val), 1)
+
+                # Casing features
+                features[f'{col}_is_lower'] = int(val.islower())
+                features[f'{col}_is_upper'] = int(val.isupper())
+                features[f'{col}_is_title'] = int(val.istitle())
+                
+                # New features
+                # Max consecutive repeated characters
+                if val:
+                    # Find all repeated sequences
+                    repeats = [len(match.group(0)) for match in re.finditer(r'(.)\1+', val.lower())]
+                    features[f'{col}_max_repeats'] = max(repeats) if repeats else 1
+                else:
+                    features[f'{col}_max_repeats'] = 0
+                
+                # Vowel ratio
+                vowels = set('aeiou')
+                vowel_count = sum(1 for c in val.lower() if c in vowels)
+                features[f'{col}_vowel_ratio'] = vowel_count / max(len(val), 1)
         
         return features
     
@@ -128,6 +147,7 @@ class FeatureExtractor:
             'email_local_length': 0,
             'email_has_numbers_local': 0,
             'email_num_dots_local': 0,
+            'email_consonant_ratio': 0.0,
         }
         
         if 'email' not in row.index or pd.isna(row['email']):
@@ -139,7 +159,25 @@ class FeatureExtractor:
         features['email_local_length'] = len(local)
         features['email_has_numbers_local'] = int(any(c.isdigit() for c in local))
         features['email_num_dots_local'] = local.count('.')
+
+        consonants = set('bcdfghjklmnpqrstvwxyz')
+        consonant_count = sum(1 for c in local.lower() if c in consonants)
+        features['email_consonant_ratio'] = consonant_count / max(len(local), 1)
         
+        return features
+    
+    def _extract_iban_features(self, row: pd.Series) -> dict:
+        """Extract IBAN specific features."""
+        features = {
+            'iban_length': 0,
+            'iban_digits_count': 0,
+            'iban_letters_count': 0,
+        }
+        iban = str(row.get('iban', '')) if pd.notna(row.get('iban')) else ""
+        if iban:
+            features['iban_length'] = len(iban)
+            features['iban_digits_count'] = sum(c.isdigit() for c in iban)
+            features['iban_letters_count'] = sum(c.isalpha() for c in iban)
         return features
     
     def _extract_phonetic_features(self, row: pd.Series) -> dict:
@@ -170,6 +208,8 @@ class FeatureExtractor:
             'name_in_email': 0,
             'surname_email_similarity': 0.0,
             'address_contains_name': 0,
+            'full_name_email_similarity': 0.0,
+            'dob_year_in_email': 0,
         }
         
         surname = str(row.get('surname', '')).lower() if pd.notna(row.get('surname')) else ""
@@ -183,10 +223,26 @@ class FeatureExtractor:
         if surname and local:
             features['name_in_email'] = int(surname in local or first_name in local)
             features['surname_email_similarity'] = jellyfish.jaro_winkler_similarity(surname, local)
+            
+            # Full name similarity
+            full_name = f"{first_name}{surname}"
+            features['full_name_email_similarity'] = jellyfish.jaro_winkler_similarity(full_name, local)
         
         # Check if name appears in address
         if surname and address:
             features['address_contains_name'] = int(surname in address)
+
+        # Check if DOB year appears in email local part
+        dob = row.get('date_of_birth')
+        if pd.notna(dob) and local:
+            try:
+                if isinstance(dob, str):
+                    dob = pd.to_datetime(dob)
+                year = str(dob.year)
+                short_year = year[-2:]
+                features['dob_year_in_email'] = int(year in local or short_year in local)
+            except Exception:
+                features['dob_year_in_email'] = 0
         
         return features
     
@@ -195,6 +251,7 @@ class FeatureExtractor:
         features = {
             'iban_country_matches_nationality': 0,
             'email_domain_common': 0,
+            'address_is_pobox': 0,
         }
         
         # Check IBAN country vs nationality
@@ -216,6 +273,21 @@ class FeatureExtractor:
         common_domains = {'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 
                          'web.de', 'gmx.de', 'protonmail.com', 'icloud.com'}
         features['email_domain_common'] = int(domain in common_domains)
+        
+        # Check for PO Box / Packstation in address (German context)
+        address = str(row.get('address', '')).lower() if pd.notna(row.get('address')) else ""
+        # Includes standard PO Box terms and German specific delivery points
+        pobox_terms = [
+            'postfach',      # PO Box
+            'packstation',   # DHL automated locker
+            'postfiliale',   # Post office branch
+            'paketshop',     # Parcel shop
+            'paketstation',  # Parcel station
+            'box'            # Generic fallback
+        ]
+        
+        if any(term in address for term in pobox_terms):
+             features['address_is_pobox'] = 1
         
         return features
     
@@ -240,6 +312,7 @@ class FeatureExtractor:
             'dob_is_weekend': 0,
             'dob_is_round_number': 0,
             'dob_is_jan_first': 0,
+            'age_years': -1,
         }
         
         dob = row.get('date_of_birth')
@@ -257,6 +330,10 @@ class FeatureExtractor:
             features['dob_is_weekend'] = int(dob.weekday() >= 5)
             features['dob_is_round_number'] = int(dob.year % 10 == 0)
             features['dob_is_jan_first'] = int(dob.month == 1 and dob.day == 1)
+            
+            # Calculate age (approximate)
+            now = pd.Timestamp.now()
+            features['age_years'] = now.year - dob.year - ((now.month, now.day) < (dob.month, dob.day))
         except Exception:
             pass
         
@@ -307,6 +384,7 @@ class FeatureExtractor:
             features.update(self._extract_string_length_features(row))
             features.update(self._extract_complexity_features(row))
             features.update(self._extract_email_features(row))
+            features.update(self._extract_iban_features(row))
             features.update(self._extract_cross_field_features(row))
             features.update(self._extract_behavioral_features(row))
             features.update(self._extract_entropy_features(row))

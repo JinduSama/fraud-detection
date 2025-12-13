@@ -12,6 +12,7 @@ import pandas as pd
 
 try:
     import shap
+    import matplotlib.pyplot as plt
     HAS_SHAP = True
 except ImportError:
     HAS_SHAP = False
@@ -336,6 +337,82 @@ class FraudExplainer:
             "feature_importance": sorted_variance.to_dict()
         }
     
+    def plot_explanation(
+        self,
+        df: pd.DataFrame,
+        idx: int,
+        save_path: Optional[str] = None,
+        show: bool = False
+    ) -> None:
+        """
+        Generate a graphical SHAP explanation (waterfall plot).
+        
+        Args:
+            df: DataFrame with customer records.
+            idx: Index of record to explain.
+            save_path: Path to save the plot image.
+            show: Whether to show the plot.
+        """
+        if not HAS_SHAP:
+            print("SHAP or matplotlib not installed. Cannot generate plot.")
+            return
+
+        # Get the model from detector
+        model = getattr(self.detector, '_model', None)
+        if model is None:
+            print("Model not available for explanation.")
+            return
+        
+        # Extract features
+        feature_df = self._feature_extractor.extract_features(df)
+        numeric_features = self._feature_extractor.get_numeric_features(feature_df)
+        X = numeric_features.fillna(0).values
+        feature_names = list(numeric_features.columns)
+        
+        # Scale if scaler exists
+        scaler = getattr(self.detector, '_scaler', None)
+        if scaler is not None:
+            X = scaler.transform(X)
+            
+        try:
+            # Create SHAP explainer
+            explainer = shap.TreeExplainer(model)
+            # Use the new API that returns an Explanation object
+            shap_values = explainer(X[idx:idx+1])
+            
+            # Set feature names for better visualization
+            shap_values.feature_names = feature_names
+            
+            plt.figure(figsize=(10, 6))
+            # Waterfall plot is good for single instance explanation
+            shap.plots.waterfall(shap_values[0], show=False)
+            
+            if save_path:
+                plt.savefig(save_path, bbox_inches='tight', dpi=300)
+                print(f"SHAP plot saved to {save_path}")
+                
+            if show:
+                plt.show()
+            
+            plt.close()
+            
+        except Exception as e:
+            print(f"Error generating SHAP plot: {e}")
+            # Fallback to summary plot if waterfall fails
+            try:
+                print("Falling back to summary plot...")
+                shap_values_legacy = explainer.shap_values(X[idx:idx+1])
+                plt.figure(figsize=(10, 6))
+                shap.summary_plot(shap_values_legacy, X[idx:idx+1], feature_names=feature_names, show=False, plot_type="bar")
+                if save_path:
+                    plt.savefig(save_path, bbox_inches='tight', dpi=300)
+                    print(f"SHAP summary plot saved to {save_path}")
+                if show:
+                    plt.show()
+                plt.close()
+            except Exception as e2:
+                print(f"Error generating fallback plot: {e2}")
+
     def generate_report(
         self, 
         df: pd.DataFrame, 

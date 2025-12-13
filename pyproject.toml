@@ -12,6 +12,8 @@ dependencies = [
     "jellyfish>=1.0.0",
     # Sparse matrices and optimization
     "scipy>=1.12.0",
+    # Visualization
+    "matplotlib>=3.8.0",
     # Configuration
     "pyyaml>=6.0.0",
 ]
