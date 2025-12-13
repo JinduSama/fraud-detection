@@ -1,14 +1,35 @@
 [project]
 name = "fraud-detection-synthetic"
-version = "1.0.0"
-description = "Synthetic dataset generation and clustering-based fraud detection for telecommunications"
+version = "2.0.0"
+description = "Scalable modular fraud detection with ensemble methods and explainability"
 requires-python = ">=3.10"
 dependencies = [
+    # Core dependencies
     "faker>=24.0.0",
     "pandas>=2.1.0",
     "numpy>=1.26.0",
     "scikit-learn>=1.4.0",
     "jellyfish>=1.0.0",
+    # Sparse matrices and optimization
+    "scipy>=1.12.0",
+    # Configuration
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+# Optional dependencies for advanced features
+full = [
+    "shap>=0.44.0",           # Explainability
+    "networkx>=3.2",          # Graph analysis
+    "pydantic>=2.5.0",        # Config validation
+    "structlog>=24.0.0",      # Structured logging
+    "psutil>=5.9.0",          # Memory monitoring
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=24.0.0",
+    "ruff>=0.1.0",
 ]
 
 [project.scripts]

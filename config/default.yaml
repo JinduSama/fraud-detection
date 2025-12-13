@@ -1,0 +1,58 @@
+# Fraud Detection System Configuration
+# =====================================
+
+# Detector Settings
+detectors:
+  dbscan:
+    enabled: true
+    eps: 0.35
+    min_samples: 2
+    distance_metric: jaro_winkler
+    use_sparse: true
+
+  isolation_forest:
+    enabled: true
+    contamination: auto
+    n_estimators: 100
+    max_samples: auto
+    random_state: 42
+
+  lof:
+    enabled: false
+    n_neighbors: 20
+    contamination: auto
+    metric: minkowski
+
+  graph:
+    enabled: false
+    similarity_threshold: 0.7
+    min_community_size: 3
+    use_betweenness: true
+    betweenness_threshold: 0.1
+
+# Ensemble Settings
+ensemble:
+  strategy: weighted_avg  # Options: max, weighted_avg, voting, stacking
+  threshold: 0.5
+  voting_threshold: 0.5
+  weights:
+    dbscan: 0.4
+    isolation_forest: 0.4
+    lof: 0.1
+    graph: 0.1
+
+# Logging Settings
+logging:
+  level: INFO
+  format: json  # Options: json, text
+  log_file: null  # Set to path for file logging
+  log_metrics: true
+
+# Data Settings
+data:
+  num_records: 500
+  fraud_ratio: 0.15
+  seed: 42
+  locale: de_DE
+  input_path: data/customer_dataset.csv
+  output_path: data/detected_fraud.csv
