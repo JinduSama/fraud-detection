@@ -542,7 +542,7 @@ def main():
     parser.add_argument(
         "-t", "--threshold",
         type=float,
-        default=0.5,
+        default=0.7,
         help="Decision threshold"
     )
     parser.add_argument(
