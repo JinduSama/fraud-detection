@@ -208,6 +208,82 @@ def format_pr_curve_report(pr_data: dict) -> str:
     return "\n".join(lines)
 
 
+def save_inspection_files(df: pd.DataFrame, output_dir: Path) -> dict:
+    """
+    Save detailed inspection files for manual review.
+    
+    Creates separate CSV files for:
+    - All flagged records
+    - True positives (correctly caught frauds)
+    - False positives (incorrectly flagged legitimate records)
+    - False negatives (missed frauds)
+    - All actual fraud records with detection status
+    
+    Args:
+        df: DataFrame with detection results.
+        output_dir: Directory for output files.
+        
+    Returns:
+        Dictionary with paths to saved files.
+    """
+    saved_files = {}
+    
+    # Ensure columns exist
+    has_ground_truth = "is_fraud" in df.columns
+    has_predictions = "detected_fraud" in df.columns
+    
+    if not has_predictions:
+        return saved_files
+    
+    # 1. All flagged records (for investigation)
+    flagged = df[df["detected_fraud"] == True].copy()
+    if len(flagged) > 0:
+        flagged_path = output_dir / "flagged_records.csv"
+        flagged.to_csv(flagged_path, index=False)
+        saved_files["flagged_records"] = str(flagged_path)
+    
+    if has_ground_truth:
+        ground_truth = df["is_fraud"].fillna(False)
+        predictions = df["detected_fraud"].fillna(False)
+        
+        # 2. True positives (correctly caught frauds)
+        tp_mask = (ground_truth == True) & (predictions == True)
+        true_positives = df[tp_mask].copy()
+        if len(true_positives) > 0:
+            tp_path = output_dir / "true_positives.csv"
+            true_positives.to_csv(tp_path, index=False)
+            saved_files["true_positives"] = str(tp_path)
+        
+        # 3. False positives (incorrectly flagged legitimate records)
+        fp_mask = (ground_truth == False) & (predictions == True)
+        false_positives = df[fp_mask].copy()
+        if len(false_positives) > 0:
+            fp_path = output_dir / "false_positives.csv"
+            false_positives.to_csv(fp_path, index=False)
+            saved_files["false_positives"] = str(fp_path)
+        
+        # 4. False negatives (missed frauds)
+        fn_mask = (ground_truth == True) & (predictions == False)
+        false_negatives = df[fn_mask].copy()
+        if len(false_negatives) > 0:
+            fn_path = output_dir / "false_negatives.csv"
+            false_negatives.to_csv(fn_path, index=False)
+            saved_files["false_negatives"] = str(fn_path)
+        
+        # 5. All actual frauds with detection status
+        actual_frauds = df[ground_truth == True].copy()
+        if len(actual_frauds) > 0:
+            # Add a column showing if caught or missed
+            actual_frauds["detection_status"] = actual_frauds["detected_fraud"].apply(
+                lambda x: "CAUGHT" if x else "MISSED"
+            )
+            frauds_path = output_dir / "actual_frauds_summary.csv"
+            actual_frauds.to_csv(frauds_path, index=False)
+            saved_files["actual_frauds"] = str(frauds_path)
+    
+    return saved_files
+
+
 def run_full_pipeline(
     num_records: int = 500,
     fraud_ratio: float = 0.15,
@@ -326,6 +402,18 @@ def run_full_pipeline(
     pr_report = format_pr_curve_report(pr_data)
     print(pr_report)
     
+    # Save inspection files
+    print("\n" + "-" * 70)
+    print("STAGE 4: SAVING INSPECTION FILES")
+    print("-" * 70)
+    
+    inspection_files = save_inspection_files(df_detected, output_path)
+    
+    print("\nInspection files saved:")
+    for file_type, file_path in inspection_files.items():
+        count = len(pd.read_csv(file_path))
+        print(f"  - {file_type}: {file_path} ({count} records)")
+    
     # Combine all reports
     full_report = "\n".join([
         "=" * 70,
@@ -367,7 +455,8 @@ def run_full_pipeline(
         "files": {
             "dataset": dataset_path,
             "detection": detection_path,
-            "report": str(report_path)
+            "report": str(report_path),
+            **inspection_files,
         }
     }
     

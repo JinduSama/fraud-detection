@@ -183,6 +183,68 @@ def detect_fraud(
         df_result["fraud_score"] = result_df["score"]
         df_result["detection_reason"] = result_df["reason"]
         
+        # Add linked records information
+        df_result["linked_records"] = ""
+        df_result["cluster_id"] = -1
+        
+        # Extract cluster/community memberships from detectors
+        for detector, _ in ensemble.detectors:
+            if hasattr(detector, 'clusters') and detector.clusters:
+                for cluster in detector.clusters:
+                    for idx in cluster.record_indices:
+                        if idx < len(df_result):
+                            # Get other customer IDs in this cluster
+                            other_ids = [
+                                df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
+                                for i in cluster.record_indices if i != idx
+                            ]
+                            if other_ids:
+                                current_linked = df_result.at[idx, "linked_records"]
+                                new_linked = "; ".join(other_ids[:5])  # Limit to 5
+                                if current_linked:
+                                    df_result.at[idx, "linked_records"] = f"{current_linked}; {new_linked}"
+                                else:
+                                    df_result.at[idx, "linked_records"] = new_linked
+                            df_result.at[idx, "cluster_id"] = cluster.cluster_id
+            
+            # Also check for graph communities
+            if hasattr(detector, 'communities') and detector.communities:
+                for comm_id, indices in enumerate(detector.communities):
+                    for idx in indices:
+                        if idx < len(df_result):
+                            other_ids = [
+                                df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
+                                for i in indices if i != idx
+                            ]
+                            if other_ids:
+                                current_linked = df_result.at[idx, "linked_records"]
+                                new_linked = "; ".join(other_ids[:5])
+                                if current_linked:
+                                    df_result.at[idx, "linked_records"] = f"{current_linked}; {new_linked}"
+                                else:
+                                    df_result.at[idx, "linked_records"] = new_linked
+        
+        # Also add shared IBAN links for any flagged records
+        if "iban" in df.columns:
+            iban_groups = df.groupby("iban").groups
+            for iban, indices in iban_groups.items():
+                if len(indices) > 1:
+                    for idx in indices:
+                        if idx < len(df_result) and df_result.at[idx, "detected_fraud"]:
+                            other_ids = [
+                                df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
+                                for i in indices if i != idx
+                            ]
+                            current_linked = str(df_result.at[idx, "linked_records"])
+                            # Avoid duplicates
+                            for oid in other_ids:
+                                if oid not in current_linked:
+                                    if current_linked:
+                                        current_linked = f"{current_linked}; {oid}"
+                                    else:
+                                        current_linked = oid
+                            df_result.at[idx, "linked_records"] = current_linked
+        
         # Generate explanations if requested
         if explain:
             print(f"\n[4/5] Generating explanations...")
