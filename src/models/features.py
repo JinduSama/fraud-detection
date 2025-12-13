@@ -96,6 +96,44 @@ class FeatureExtractor:
             return parts[0], parts[1]
         return "", ""
     
+    @staticmethod
+    def _safe_str(val) -> str:
+        return "" if pd.isna(val) else str(val)
+
+    @staticmethod
+    def _longest_run(pattern: str, text: str) -> int:
+        if not text:
+            return 0
+        runs = [len(m.group(0)) for m in re.finditer(pattern, text)]
+        return max(runs) if runs else 0
+
+    @staticmethod
+    def validate_iban(iban: str) -> int:
+        """
+        ISO 13616 (IBAN) mod-97 check. Returns 1 if valid else 0.
+        """
+        if pd.isna(iban):
+            return 0
+        iban = re.sub(r"\s+", "", str(iban)).upper()
+        if not iban or not re.fullmatch(r"[A-Z0-9]+", iban):
+            return 0
+        if len(iban) < 15 or len(iban) > 34:
+            return 0
+
+        rearranged = iban[4:] + iban[:4]
+        digits = []
+        for ch in rearranged:
+            if ch.isalpha():
+                digits.append(str(ord(ch) - 55))  # A=10 ... Z=35
+            else:
+                digits.append(ch)
+        digit_str = "".join(digits)
+
+        remainder = 0
+        for ch in digit_str:
+            remainder = (remainder * 10 + (ord(ch) - 48)) % 97
+        return int(remainder == 1)
+    
     def _extract_string_length_features(self, row: pd.Series) -> dict:
         """Extract string length features."""
         features = {}
@@ -143,11 +181,19 @@ class FeatureExtractor:
     def _extract_email_features(self, row: pd.Series) -> dict:
         """Extract email-specific features."""
         features = {
-            'email_domain_length': 0,
-            'email_local_length': 0,
-            'email_has_numbers_local': 0,
-            'email_num_dots_local': 0,
-            'email_consonant_ratio': 0.0,
+            "email_domain_length": 0,
+            "email_local_length": 0,
+            "email_has_numbers_local": 0,
+            "email_num_dots_local": 0,
+            "email_consonant_ratio": 0.0,
+
+            "email_domain_num_parts": 0,
+            "email_tld_length": 0,
+            "email_local_has_plus": 0,
+            "email_local_has_underscore": 0,
+            "email_domain_has_digits": 0,
+            "email_local_longest_digit_run": 0,
+            "email_domain_has_dot": 0,
         }
         
         if 'email' not in row.index or pd.isna(row['email']):
@@ -164,6 +210,16 @@ class FeatureExtractor:
         consonant_count = sum(1 for c in local.lower() if c in consonants)
         features['email_consonant_ratio'] = consonant_count / max(len(local), 1)
         
+        # New email features
+        features["email_domain_num_parts"] = 0 if not domain else len([p for p in domain.split(".") if p])
+        tld = domain.rsplit(".", 1)[-1] if domain and "." in domain else ""
+        features["email_tld_length"] = len(tld)
+        features["email_local_has_plus"] = int("+" in local)
+        features["email_local_has_underscore"] = int("_" in local)
+        features["email_domain_has_digits"] = int(any(c.isdigit() for c in domain))
+        features["email_local_longest_digit_run"] = self._longest_run(r"\d+", local)
+        features["email_domain_has_dot"] = int("." in domain)
+        
         return features
     
     def _extract_iban_features(self, row: pd.Series) -> dict:
@@ -172,12 +228,16 @@ class FeatureExtractor:
             'iban_length': 0,
             'iban_digits_count': 0,
             'iban_letters_count': 0,
+            "iban_is_valid": 0,
+            "iban_has_spaces": 0,
         }
         iban = str(row.get('iban', '')) if pd.notna(row.get('iban')) else ""
         if iban:
             features['iban_length'] = len(iban)
             features['iban_digits_count'] = sum(c.isdigit() for c in iban)
             features['iban_letters_count'] = sum(c.isalpha() for c in iban)
+            features["iban_has_spaces"] = int(bool(re.search(r"\s", iban)))
+            features["iban_is_valid"] = self.validate_iban(iban)
         return features
     
     def _extract_phonetic_features(self, row: pd.Series) -> dict:
@@ -205,45 +265,88 @@ class FeatureExtractor:
     def _extract_cross_field_features(self, row: pd.Series) -> dict:
         """Extract cross-field relationship features."""
         features = {
-            'name_in_email': 0,
-            'surname_email_similarity': 0.0,
-            'address_contains_name': 0,
-            'full_name_email_similarity': 0.0,
-            'dob_year_in_email': 0,
-        }
-        
-        surname = str(row.get('surname', '')).lower() if pd.notna(row.get('surname')) else ""
-        first_name = str(row.get('first_name', '')).lower() if pd.notna(row.get('first_name')) else ""
-        email = str(row.get('email', '')).lower() if pd.notna(row.get('email')) else ""
-        address = str(row.get('address', '')).lower() if pd.notna(row.get('address')) else ""
-        
-        local, _ = self.extract_email_components(email)
-        
-        # Check if name appears in email
-        if surname and local:
-            features['name_in_email'] = int(surname in local or first_name in local)
-            features['surname_email_similarity'] = jellyfish.jaro_winkler_similarity(surname, local)
-            
-            # Full name similarity
-            full_name = f"{first_name}{surname}"
-            features['full_name_email_similarity'] = jellyfish.jaro_winkler_similarity(full_name, local)
-        
-        # Check if name appears in address
-        if surname and address:
-            features['address_contains_name'] = int(surname in address)
+            "name_in_email": 0,
+            "surname_email_similarity": 0.0,
+            "address_contains_name": 0,
+            "full_name_email_similarity": 0.0,
+            "dob_year_in_email": 0,
 
-        # Check if DOB year appears in email local part
-        dob = row.get('date_of_birth')
-        if pd.notna(dob) and local:
+            # New, more targeted cross-field features
+            "first_name_in_email": 0,
+            "surname_in_email": 0,
+            "first_name_email_similarity": 0.0,
+            "name_tokens_email_overlap_ratio": 0.0,
+            "email_local_startswith_initial_surname": 0,
+            "first_name_in_address": 0,
+            "full_name_in_address": 0,
+        }
+
+        surname_raw = self._safe_str(row.get("surname", ""))
+        first_name_raw = self._safe_str(row.get("first_name", ""))
+        email_raw = self._safe_str(row.get("email", ""))
+        address_raw = self._safe_str(row.get("address", ""))
+        dob = row.get("date_of_birth")
+
+        local_raw, _ = self.extract_email_components(email_raw)
+
+        surname_norm = self.normalize_text(surname_raw)
+        first_norm = self.normalize_text(first_name_raw)
+        address_norm = self.normalize_text(address_raw)
+
+        local_norm = self.normalize_text(local_raw)  # strips . _ - + etc
+
+        # Email-based cross checks
+        if local_norm:
+            if surname_norm:
+                features["surname_in_email"] = int(surname_norm in local_norm)
+            if first_norm:
+                features["first_name_in_email"] = int(first_norm in local_norm)
+
+            features["name_in_email"] = int(features["surname_in_email"] or features["first_name_in_email"])
+
+            if surname_norm:
+                features["surname_email_similarity"] = jellyfish.jaro_winkler_similarity(surname_norm, local_norm)
+
+            if first_norm:
+                features["first_name_email_similarity"] = jellyfish.jaro_winkler_similarity(first_norm, local_norm)
+
+            if first_norm and surname_norm:
+                full_name = f"{first_norm}{surname_norm}"
+                features["full_name_email_similarity"] = jellyfish.jaro_winkler_similarity(full_name, local_norm)
+
+                # Token overlap: name tokens vs email-local tokens
+                name_tokens = {t for t in f"{first_norm} {surname_norm}".split() if len(t) >= 2}
+                local_tokens = {t for t in re.split(r"[^a-z0-9]+", local_raw.lower()) if len(t) >= 2}
+                features["name_tokens_email_overlap_ratio"] = len(name_tokens & local_tokens) / max(len(name_tokens), 1)
+
+                # Common pattern: "hmueller", "jsmith" etc.
+                local_alnum = re.sub(r"[^a-z0-9]", "", local_raw.lower())
+                surname_alnum = re.sub(r"[^a-z0-9]", "", surname_norm)
+                first_initial = first_norm[0] if first_norm else ""
+                features["email_local_startswith_initial_surname"] = int(
+                    bool(first_initial and surname_alnum and local_alnum.startswith(first_initial + surname_alnum))
+                )
+
+        # Address-based cross checks
+        if address_norm:
+            if surname_norm:
+                features["address_contains_name"] = int(surname_norm in address_norm)
+            if first_norm:
+                features["first_name_in_address"] = int(first_norm in address_norm)
+            if first_norm and surname_norm:
+                features["full_name_in_address"] = int(f"{first_norm} {surname_norm}" in address_norm)
+
+        # DOB year in email-local
+        if pd.notna(dob) and local_raw:
             try:
                 if isinstance(dob, str):
                     dob = pd.to_datetime(dob)
                 year = str(dob.year)
                 short_year = year[-2:]
-                features['dob_year_in_email'] = int(year in local or short_year in local)
+                features["dob_year_in_email"] = int(year in local_raw or short_year in local_raw)
             except Exception:
-                features['dob_year_in_email'] = 0
-        
+                features["dob_year_in_email"] = 0
+
         return features
     
     def _extract_behavioral_features(self, row: pd.Series) -> dict:
@@ -365,6 +468,77 @@ class FeatureExtractor:
         
         return network_features
     
+    def _extract_string_stat_features(self, row: pd.Series) -> dict:
+        features = {}
+        targets = {
+            "surname": self._safe_str(row.get("surname", "")),
+            "first_name": self._safe_str(row.get("first_name", "")),
+            "address": self._safe_str(row.get("address", "")),
+        }
+
+        email = self._safe_str(row.get("email", ""))
+        local, _ = self.extract_email_components(email)
+        targets["email_local"] = local
+
+        for key, raw in targets.items():
+            text = raw.strip()
+            norm = self.normalize_text(text)
+
+            features[f"{key}_token_count"] = 0 if not norm else len(norm.split())
+            tokens = norm.split() if norm else []
+            features[f"{key}_unique_token_ratio"] = (len(set(tokens)) / max(len(tokens), 1)) if tokens else 0.0
+
+            if not text:
+                features[f"{key}_unique_char_ratio"] = 0.0
+                features[f"{key}_digit_ratio"] = 0.0
+                features[f"{key}_alpha_ratio"] = 0.0
+                features[f"{key}_whitespace_ratio"] = 0.0
+                continue
+
+            length = max(len(text), 1)
+            features[f"{key}_unique_char_ratio"] = len(set(text.lower())) / length
+            features[f"{key}_digit_ratio"] = sum(c.isdigit() for c in text) / length
+            features[f"{key}_alpha_ratio"] = sum(c.isalpha() for c in text) / length
+            features[f"{key}_whitespace_ratio"] = sum(c.isspace() for c in text) / length
+
+        return features
+
+    def _extract_address_features(self, row: pd.Series) -> dict:
+        features = {
+            "address_has_house_number": 0,
+            "address_house_number_len": 0,
+            "address_has_postcode": 0,
+            "address_postcode_len": 0,
+            "address_has_street_keyword": 0,
+        }
+
+        address = self._safe_str(row.get("address", "")).strip()
+        if not address:
+            return features
+
+        addr_lower = address.lower()
+        # House number (very permissive)
+        m_house = re.search(r"\b\d{1,5}[a-zA-Z]?\b", addr_lower)
+        if m_house:
+            features["address_has_house_number"] = 1
+            features["address_house_number_len"] = len(m_house.group(0))
+
+        # Postcode (DE-like 5 digits; still useful as generic signal)
+        m_zip = re.search(r"\b\d{5}\b", addr_lower)
+        if m_zip:
+            features["address_has_postcode"] = 1
+            features["address_postcode_len"] = len(m_zip.group(0))
+
+        street_keywords = {
+            "strasse", "straße", "street", "st", "road", "rd", "avenue", "ave",
+            "allee", "platz", "gasse", "weg"
+        }
+        norm = self.normalize_text(address)
+        tokens = set(norm.split()) if norm else set()
+        features["address_has_street_keyword"] = int(any(k in tokens for k in street_keywords))
+
+        return features
+    
     def extract_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Extract all features from the dataset.
@@ -389,6 +563,8 @@ class FeatureExtractor:
             features.update(self._extract_behavioral_features(row))
             features.update(self._extract_entropy_features(row))
             features.update(self._extract_temporal_features(row))
+            features.update(self._extract_string_stat_features(row))
+            features.update(self._extract_address_features(row))
             
             feature_dicts.append(features)
         
