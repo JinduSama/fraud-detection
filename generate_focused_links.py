@@ -3,8 +3,9 @@ Generate a focused linked pairs report showing exactly which records share what.
 
 This creates multiple views:
 1. Shared IBAN pairs
-2. Shared Address pairs  
-3. Similar Name pairs (for typo variants)
+2. Shared Address pairs
+3. Shared Email pairs
+4. Similar Name pairs (for typo variants)
 """
 
 import pandas as pd
@@ -121,12 +122,58 @@ def generate_focused_links_report(
             for _, row in group.iterrows():
                 fraud_tag = " [FRAUD]" if row["is_fraud"] else ""
                 print(f"    → {row['customer_id']}: {row['surname']}, {row['first_name']}{fraud_tag}")
-    
+
     # =========================================================================
-    # 3. SIMILAR NAMES (TYPO VARIANTS)
+    # 3. SHARED EMAIL REPORT
     # =========================================================================
     print("\n" + "=" * 70)
-    print("3. SIMILAR NAME PAIRS (Potential Typo Variants)")
+    print("3. SHARED EMAIL PAIRS")
+    print("=" * 70)
+    
+    email_groups = []
+    if "email" in df.columns:
+        for email, group in df.groupby("email"):
+            if len(group) > 1 and pd.notna(email) and email != "":
+                for _, row in group.iterrows():
+                    email_groups.append({
+                        "shared_email": email,
+                        "group_size": len(group),
+                        "customer_id": row["customer_id"],
+                        "surname": row.get("surname", ""),
+                        "first_name": row.get("first_name", ""),
+                        "address": row.get("address", ""),
+                        "iban": row.get("iban", ""),
+                        "date_of_birth": row.get("date_of_birth", ""),
+                        "is_fraud": row.get("is_fraud", False),
+                        "fraud_type": row.get("fraud_type", ""),
+                        "detected_fraud": row.get("detected_fraud", False),
+                        "fraud_score": row.get("fraud_score", 0),
+                    })
+    
+    if email_groups:
+        email_df = pd.DataFrame(email_groups)
+        email_df = email_df.sort_values(["shared_email", "customer_id"])
+        email_file = output_path / "linked_by_email.csv"
+        email_df.to_csv(email_file, index=False)
+        reports["email"] = email_file
+        
+        print(f"\nFound {email_df['shared_email'].nunique()} shared email groups")
+        print(f"Saved to: {email_file}")
+        
+        for email in email_df["shared_email"].unique():
+            group = email_df[email_df["shared_email"] == email]
+            fraud_in_group = group["is_fraud"].any()
+            fraud_marker = " ⚠️ FRAUD DETECTED" if fraud_in_group else ""
+            print(f"\n  Email: {email}{fraud_marker}")
+            for _, row in group.iterrows():
+                fraud_tag = " [FRAUD]" if row["is_fraud"] else ""
+                print(f"    → {row['customer_id']}: {row['surname']}, {row['first_name']}{fraud_tag}")
+    
+    # =========================================================================
+    # 4. SIMILAR NAMES (TYPO VARIANTS)
+    # =========================================================================
+    print("\n" + "=" * 70)
+    print("4. SIMILAR NAME PAIRS (Potential Typo Variants)")
     print("=" * 70)
     
     name_pairs = []
@@ -143,9 +190,13 @@ def generate_focused_links_report(
                 if name_i == name_j:
                     continue  # Skip exact matches
                 
-                similarity = jellyfish.jaro_winkler_similarity(name_i, name_j)
+                # Use Levenshtein distance for better quality
+                # Jaro-Winkler is too lenient on prefixes (e.g. "Melitta Kusch" vs "Melitta Scholl")
+                dist = jellyfish.levenshtein_distance(name_i, name_j)
+                max_len = max(len(name_i), len(name_j))
+                similarity = 1.0 - (dist / max_len) if max_len > 0 else 0.0
                 
-                if similarity >= 0.85:  # High similarity threshold
+                if similarity >= 0.80:  # High similarity threshold
                     name_pairs.append({
                         "similarity_score": round(similarity, 3),
                         "customer_id_1": row_i["customer_id"],
@@ -169,7 +220,7 @@ def generate_focused_links_report(
         names_df.to_csv(names_file, index=False)
         reports["similar_names"] = names_file
         
-        print(f"\nFound {len(names_df)} similar name pairs (>85% similarity)")
+        print(f"\nFound {len(names_df)} similar name pairs (>80% Levenshtein similarity)")
         print(f"Saved to: {names_file}")
         
         for _, row in names_df.head(15).iterrows():
@@ -180,10 +231,10 @@ def generate_focused_links_report(
             print(f"    → {row['customer_id_2']}: {row['name_2']}{fraud_2}")
     
     # =========================================================================
-    # 4. COMBINED MASTER LINK REPORT
+    # 5. COMBINED MASTER LINK REPORT
     # =========================================================================
     print("\n" + "=" * 70)
-    print("4. MASTER LINK REPORT")
+    print("5. MASTER LINK REPORT")
     print("=" * 70)
     
     # Create a master report with all link types
@@ -238,6 +289,32 @@ def generate_focused_links_report(
                             "detected_fraud": row.get("detected_fraud", False),
                         })
         df = df.drop(columns=["address_norm"], errors="ignore")
+
+    # Add email links
+    if "email" in df.columns:
+        for email, group in df.groupby("email"):
+            if len(group) > 1 and pd.notna(email) and email != "":
+                customer_ids = group["customer_id"].tolist()
+                for cid in customer_ids:
+                    row = group[group["customer_id"] == cid].iloc[0]
+                    other_ids = [c for c in customer_ids if c != cid]
+                    # Check if already added via IBAN or Address
+                    existing = [m for m in master_links 
+                               if m["customer_id"] == cid and set(m["linked_to"].split("; ")) == set(other_ids)]
+                    if not existing:
+                        master_links.append({
+                            "customer_id": cid,
+                            "link_type": "SHARED_EMAIL",
+                            "link_value": email,
+                            "linked_to": "; ".join(other_ids),
+                            "surname": row.get("surname", ""),
+                            "first_name": row.get("first_name", ""),
+                            "address": row.get("address", ""),
+                            "email": row.get("email", ""),
+                            "is_fraud": row.get("is_fraud", False),
+                            "fraud_type": row.get("fraud_type", ""),
+                            "detected_fraud": row.get("detected_fraud", False),
+                        })
     
     if master_links:
         master_df = pd.DataFrame(master_links)
