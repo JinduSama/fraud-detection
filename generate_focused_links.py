@@ -80,28 +80,38 @@ def generate_focused_links_report(
     print("=" * 70)
     
     address_groups = []
-    if "address" in df.columns:
-        # Normalize addresses
-        df["address_norm"] = df["address"].str.lower().str.strip()
-        
-        for addr, group in df.groupby("address_norm"):
-            if len(group) > 1 and pd.notna(addr) and addr != "":
-                for _, row in group.iterrows():
-                    address_groups.append({
-                        "shared_address": row["address"],  # Original address
-                        "group_size": len(group),
-                        "customer_id": row["customer_id"],
-                        "surname": row.get("surname", ""),
-                        "first_name": row.get("first_name", ""),
-                        "iban": row.get("iban", ""),
-                        "email": row.get("email", ""),
-                        "date_of_birth": row.get("date_of_birth", ""),
-                        "is_fraud": row.get("is_fraud", False),
-                        "fraud_type": row.get("fraud_type", ""),
-                        "detected_fraud": row.get("detected_fraud", False),
-                        "fraud_score": row.get("fraud_score", 0),
-                    })
-        df = df.drop(columns=["address_norm"])
+    if all(c in df.columns for c in ["strasse", "hausnummer", "plz", "stadt"]):
+        # Prefer structured address grouping
+        df["address_norm"] = (
+            df["strasse"].fillna("").astype(str).str.lower().str.strip() + "|" +
+            df["hausnummer"].fillna("").astype(str).str.lower().str.strip() + "|" +
+            df["plz"].fillna("").astype(str).str.lower().str.strip() + "|" +
+            df["stadt"].fillna("").astype(str).str.lower().str.strip()
+        )
+    elif "address" in df.columns:
+        # Fallback: normalize full address string
+        df["address_norm"] = df["address"].fillna("").astype(str).str.lower().str.strip()
+    else:
+        df["address_norm"] = ""
+
+    for addr, group in df.groupby("address_norm"):
+        if len(group) > 1 and pd.notna(addr) and addr != "":
+            for _, row in group.iterrows():
+                address_groups.append({
+                    "shared_address": row.get("address", ""),
+                    "group_size": len(group),
+                    "customer_id": row["customer_id"],
+                    "surname": row.get("surname", ""),
+                    "first_name": row.get("first_name", ""),
+                    "iban": row.get("iban", ""),
+                    "email": row.get("email", ""),
+                    "date_of_birth": row.get("date_of_birth", ""),
+                    "is_fraud": row.get("is_fraud", False),
+                    "fraud_type": row.get("fraud_type", ""),
+                    "detected_fraud": row.get("detected_fraud", False),
+                    "fraud_score": row.get("fraud_score", 0),
+                })
+    df = df.drop(columns=["address_norm"])
     
     if address_groups:
         addr_df = pd.DataFrame(address_groups)

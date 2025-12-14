@@ -59,9 +59,19 @@ def generate_linked_cases_report(
                 union(indices[0], indices[i])
     
     # Group by shared address (normalized)
-    if "address" in flagged.columns:
-        # Normalize addresses for comparison
-        flagged["address_norm"] = flagged["address"].str.lower().str.strip()
+    if all(c in flagged.columns for c in ["strasse", "hausnummer", "plz", "stadt"]):
+        flagged["address_norm"] = (
+            flagged["strasse"].fillna("").astype(str).str.lower().str.strip() + "|" +
+            flagged["hausnummer"].fillna("").astype(str).str.lower().str.strip() + "|" +
+            flagged["plz"].fillna("").astype(str).str.lower().str.strip() + "|" +
+            flagged["stadt"].fillna("").astype(str).str.lower().str.strip()
+        )
+    elif "address" in flagged.columns:
+        flagged["address_norm"] = flagged["address"].fillna("").astype(str).str.lower().str.strip()
+    else:
+        flagged["address_norm"] = ""
+
+    if "address_norm" in flagged.columns:
         for addr, group in flagged.groupby("address_norm"):
             indices = group.index.tolist()
             for i in range(1, len(indices)):

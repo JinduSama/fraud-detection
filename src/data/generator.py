@@ -22,6 +22,12 @@ class CustomerRecord:
     customer_id: str
     surname: str
     first_name: str
+    # Structured address fields (preferred for modeling/link analysis)
+    strasse: str
+    hausnummer: str
+    plz: str
+    stadt: str
+    # Backward-compatible full address string
     address: str
     iban: str
     email: str
@@ -103,6 +109,24 @@ class CustomerDataGenerator:
         clean_pattern = "".join(c for c in pattern if c.isalnum() or c == ".")
         
         return f"{clean_pattern}@{domain}"
+
+    @staticmethod
+    def format_address(strasse: str, hausnummer: str, plz: str, stadt: str) -> str:
+        """Format a simple, locale-agnostic address string from structured fields."""
+        street_part = " ".join(p for p in [strasse.strip(), hausnummer.strip()] if p)
+        city_part = " ".join(p for p in [plz.strip(), stadt.strip()] if p)
+        if street_part and city_part:
+            return f"{street_part}, {city_part}"
+        return street_part or city_part
+
+    def _generate_address_parts(self) -> tuple[str, str, str, str]:
+        """Generate structured address parts using Faker."""
+        # Faker provides locale-specific address providers for these fields.
+        strasse = str(self.faker.street_name())
+        hausnummer = str(self.faker.building_number())
+        plz = str(self.faker.postcode())
+        stadt = str(self.faker.city())
+        return strasse, hausnummer, plz, stadt
     
     def generate_single_record(self) -> CustomerRecord:
         """
@@ -119,12 +143,19 @@ class CustomerDataGenerator:
         
         # Get nationality based on locale
         nationality = self.SUPPORTED_LOCALES.get(self.locale, "Unknown")
+
+        strasse, hausnummer, plz, stadt = self._generate_address_parts()
+        address = self.format_address(strasse, hausnummer, plz, stadt)
         
         return CustomerRecord(
             customer_id=self._generate_customer_id(),
             surname=surname,
             first_name=first_name,
-            address=self.faker.address().replace("\n", ", "),
+            strasse=strasse,
+            hausnummer=hausnummer,
+            plz=plz,
+            stadt=stadt,
+            address=address,
             iban=self._generate_iban(),
             email=self._generate_email(first_name, surname),
             date_of_birth=dob,
@@ -157,11 +188,19 @@ class CustomerDataGenerator:
         """
         data = []
         for record in records:
+            # Ensure backward-compatible `address` is populated
+            address = record.address or self.format_address(
+                record.strasse, record.hausnummer, record.plz, record.stadt
+            )
             data.append({
                 "customer_id": record.customer_id,
                 "surname": record.surname,
                 "first_name": record.first_name,
-                "address": record.address,
+                "strasse": record.strasse,
+                "hausnummer": record.hausnummer,
+                "plz": record.plz,
+                "stadt": record.stadt,
+                "address": address,
                 "iban": record.iban,
                 "email": record.email,
                 "date_of_birth": record.date_of_birth.isoformat(),

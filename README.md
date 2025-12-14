@@ -88,6 +88,23 @@ Run the complete pipeline (generate → detect → evaluate):
 uv run python -m src.evaluate
 ```
 
+### Parameter + Seed Sweep (Stability / Tuning)
+
+Run a small grid over multiple random seeds and parameter settings and export a CSV summary:
+
+```bash
+uv run python -m src.sweep \
+  --seeds 1 2 3 4 5 \
+  --num-records 500 --fraud-ratio 0.02 \
+  --detector-sets dbscan,isolation_forest dbscan,isolation_forest,graph \
+  --eps 0.3 0.35 0.4 \
+  --thresholds 0.6 0.7 0.8 \
+  --fusion-strategies weighted_avg voting \
+  --output data/sweeps/sweep_results.csv
+```
+
+This writes a sortable CSV with precision/recall/F1 + confusion-matrix counts per run.
+
 ### Individual Components
 
 #### 1. Generate Synthetic Dataset

@@ -25,7 +25,17 @@ class DataPreprocessor:
     """
     
     # Columns to preprocess for similarity matching
-    TEXT_COLUMNS = ["surname", "first_name", "address", "email"]
+    # Prefer structured address fields when present; keep `address` for backward compatibility.
+    TEXT_COLUMNS = [
+        "surname",
+        "first_name",
+        "email",
+        "address",
+        "strasse",
+        "hausnummer",
+        "plz",
+        "stadt",
+    ]
     
     def __init__(self):
         """Initialize the preprocessor."""
@@ -170,6 +180,25 @@ class DataPreprocessor:
             Preprocessed DataFrame with additional features.
         """
         processed = df.copy()
+
+        # If a full `address` column is missing, derive it from structured parts.
+        if "address" not in processed.columns:
+            has_parts = all(c in processed.columns for c in ["strasse", "hausnummer", "plz", "stadt"])
+            if has_parts:
+                def _fmt(row: pd.Series) -> str:
+                    street_part = " ".join(
+                        p for p in [str(row.get("strasse", "") or "").strip(), str(row.get("hausnummer", "") or "").strip()]
+                        if p
+                    )
+                    city_part = " ".join(
+                        p for p in [str(row.get("plz", "") or "").strip(), str(row.get("stadt", "") or "").strip()]
+                        if p
+                    )
+                    if street_part and city_part:
+                        return f"{street_part}, {city_part}"
+                    return street_part or city_part
+
+                processed["address"] = processed.apply(_fmt, axis=1)
         
         # Normalize text columns
         for col in self.TEXT_COLUMNS:

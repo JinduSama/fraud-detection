@@ -125,6 +125,60 @@ class ExtendedFraudInjector:
             modified = f"Apt {apt_num}, {modified}"
         
         return modified
+
+    @staticmethod
+    def _format_address(strasse: str, hausnummer: str, plz: str, stadt: str) -> str:
+        street_part = " ".join(p for p in [strasse.strip(), hausnummer.strip()] if p)
+        city_part = " ".join(p for p in [plz.strip(), stadt.strip()] if p)
+        if street_part and city_part:
+            return f"{street_part}, {city_part}"
+        return street_part or city_part
+
+    def _generate_address_parts(self) -> tuple[str, str, str, str]:
+        strasse = str(self.faker.street_name())
+        hausnummer = str(self.faker.building_number())
+        plz = str(self.faker.postcode())
+        stadt = str(self.faker.city())
+        return strasse, hausnummer, plz, stadt
+
+    def _modify_address_parts_slightly(
+        self,
+        strasse: str,
+        hausnummer: str,
+        plz: str,
+        stadt: str,
+    ) -> tuple[str, str, str, str]:
+        # Keep it simple: sometimes abbreviate/typo street, sometimes tweak house number suffix.
+        new_strasse = strasse
+        new_hausnummer = hausnummer
+        new_plz = plz
+        new_stadt = stadt
+
+        replacements = [
+            ("straße", "str."),
+            ("strasse", "str."),
+            ("Straße", "Str."),
+            ("Strasse", "Str."),
+            ("Street", "St."),
+            ("Avenue", "Ave."),
+            ("Road", "Rd."),
+        ]
+        if new_strasse and random.random() > 0.6:
+            for original, replacement in replacements:
+                if original in new_strasse:
+                    new_strasse = new_strasse.replace(original, replacement)
+                    break
+
+        if new_strasse and random.random() > 0.85:
+            new_strasse = self._introduce_typo(new_strasse)
+
+        if new_hausnummer and random.random() > 0.8:
+            # Add a plausible suffix if it doesn't already have one
+            s = str(new_hausnummer).strip()
+            if s.isdigit():
+                new_hausnummer = f"{s}{random.choice(['a', 'b', ''])}".strip()
+
+        return new_strasse, new_hausnummer, new_plz, new_stadt
     
     # Original fraud patterns
     def create_near_duplicate(self, base_record: CustomerRecord) -> CustomerRecord:
@@ -133,6 +187,10 @@ class ExtendedFraudInjector:
             customer_id=self._generate_fraud_id(),
             surname=self.faker.last_name(),
             first_name=self.faker.first_name(),
+            strasse=base_record.strasse,
+            hausnummer=base_record.hausnummer,
+            plz=base_record.plz,
+            stadt=base_record.stadt,
             address=base_record.address,
             iban=self.faker.iban(),
             email=self.faker.email(),
@@ -153,11 +211,23 @@ class ExtendedFraudInjector:
         else:
             new_email = self.faker.email()
         
+        new_strasse, new_hausnummer, new_plz, new_stadt = self._modify_address_parts_slightly(
+            base_record.strasse,
+            base_record.hausnummer,
+            base_record.plz,
+            base_record.stadt,
+        )
+        new_address = self._format_address(new_strasse, new_hausnummer, new_plz, new_stadt)
+
         return CustomerRecord(
             customer_id=self._generate_fraud_id(),
             surname=new_surname,
             first_name=new_first_name,
-            address=self._modify_address_slightly(base_record.address),
+            strasse=new_strasse,
+            hausnummer=new_hausnummer,
+            plz=new_plz,
+            stadt=new_stadt,
+            address=new_address,
             iban=self.faker.iban(),
             email=new_email,
             date_of_birth=base_record.date_of_birth,
@@ -168,11 +238,17 @@ class ExtendedFraudInjector:
     
     def create_shared_iban(self, base_record: CustomerRecord) -> CustomerRecord:
         """Create a record sharing the same IBAN."""
+        strasse, hausnummer, plz, stadt = self._generate_address_parts()
+        address = self._format_address(strasse, hausnummer, plz, stadt)
         return CustomerRecord(
             customer_id=self._generate_fraud_id(),
             surname=self.faker.last_name(),
             first_name=self.faker.first_name(),
-            address=self.faker.address().replace("\n", ", "),
+            strasse=strasse,
+            hausnummer=hausnummer,
+            plz=plz,
+            stadt=stadt,
+            address=address,
             iban=base_record.iban,
             email=self.faker.email(),
             date_of_birth=self.faker.date_of_birth(minimum_age=18, maximum_age=80),
@@ -184,12 +260,18 @@ class ExtendedFraudInjector:
     def create_synthetic_identity(self, base_record: CustomerRecord) -> CustomerRecord:
         """Create a synthetic identity fraud record."""
         use_real_surname = random.random() > 0.5
-        
+
+        strasse, hausnummer, plz, stadt = self._generate_address_parts()
+        address = self._format_address(strasse, hausnummer, plz, stadt)
         return CustomerRecord(
             customer_id=self._generate_fraud_id(),
             surname=base_record.surname if use_real_surname else self.faker.last_name(),
             first_name=self.faker.first_name() if use_real_surname else base_record.first_name,
-            address=self.faker.address().replace("\n", ", "),
+            strasse=strasse,
+            hausnummer=hausnummer,
+            plz=plz,
+            stadt=stadt,
+            address=address,
             iban=self.faker.iban(),
             email=self.faker.email(),
             date_of_birth=base_record.date_of_birth,
@@ -221,12 +303,19 @@ class ExtendedFraudInjector:
             
             # Create similar email pattern
             email = f"{first_name.lower()}{random.randint(1, 99)}@{email_domain}"
+
+            strasse, hausnummer, plz, stadt = self._generate_address_parts()
+            address = self._format_address(strasse, hausnummer, plz, stadt)
             
             record = CustomerRecord(
                 customer_id=self._generate_fraud_id(),
                 surname=surname,
                 first_name=first_name,
-                address=self.faker.address().replace("\n", ", "),
+                strasse=strasse,
+                hausnummer=hausnummer,
+                plz=plz,
+                stadt=stadt,
+                address=address,
                 iban=self.faker.iban(),
                 email=email,
                 date_of_birth=self.faker.date_of_birth(minimum_age=18, maximum_age=40),
@@ -259,12 +348,21 @@ class ExtendedFraudInjector:
             email = f"user{random.randint(1000, 9999)}_{i}@{base_email_domain}"
             
             # Similar address area
-            address = f"{random.randint(1, 100)} {self.faker.street_name()}, {base_record.address.split(',')[-1] if ',' in base_record.address else self.faker.city()}"
+            # Keep same city/PLZ area as base where possible
+            strasse = str(self.faker.street_name())
+            hausnummer = str(random.randint(1, 100))
+            plz = getattr(base_record, "plz", "") or str(self.faker.postcode())
+            stadt = getattr(base_record, "stadt", "") or str(self.faker.city())
+            address = self._format_address(strasse, hausnummer, plz, stadt)
             
             record = CustomerRecord(
                 customer_id=self._generate_fraud_id(),
                 surname=self.faker.last_name(),
                 first_name=first_name,
+                strasse=strasse,
+                hausnummer=hausnummer,
+                plz=plz,
+                stadt=stadt,
                 address=address,
                 iban=self.faker.iban(),
                 email=email,
@@ -301,7 +399,16 @@ class ExtendedFraudInjector:
                 customer_id=self._generate_fraud_id(),
                 surname=self.faker.last_name(),
                 first_name=self.faker.first_name(),
-                address=f"{shared_address_parts}, Unit {i + 1}",  # Similar addresses
+                strasse=base_record.strasse,
+                hausnummer=f"{base_record.hausnummer}{i + 1}" if str(base_record.hausnummer).strip() else str(i + 1),
+                plz=base_record.plz,
+                stadt=base_record.stadt,
+                address=self._format_address(
+                    base_record.strasse,
+                    f"{base_record.hausnummer}{i + 1}" if str(base_record.hausnummer).strip() else str(i + 1),
+                    base_record.plz,
+                    base_record.stadt,
+                ),
                 iban=shared_iban,
                 email=self.faker.email(),
                 date_of_birth=self.faker.date_of_birth(minimum_age=25, maximum_age=45),
@@ -334,12 +441,19 @@ class ExtendedFraudInjector:
             iban_base = base_record.iban[:4] if len(base_record.iban) >= 4 else "DE00"
             iban_suffix = str(base_num + i).zfill(16)
             sequential_iban = f"{iban_base}{iban_suffix}"
+
+            strasse, hausnummer, plz, stadt = self._generate_address_parts()
+            address = self._format_address(strasse, hausnummer, plz, stadt)
             
             record = CustomerRecord(
                 customer_id=self._generate_fraud_id(),
                 surname=self.faker.last_name(),
                 first_name=self.faker.first_name(),
-                address=self.faker.address().replace("\n", ", "),
+                strasse=strasse,
+                hausnummer=hausnummer,
+                plz=plz,
+                stadt=stadt,
+                address=address,
                 iban=sequential_iban,
                 email=email,
                 date_of_birth=self.faker.date_of_birth(minimum_age=18, maximum_age=60),
@@ -372,12 +486,19 @@ class ExtendedFraudInjector:
         
         for i in range(group_size):
             suspicious_dob = random.choice(suspicious_dates)
+
+            strasse, hausnummer, plz, stadt = self._generate_address_parts()
+            address = self._format_address(strasse, hausnummer, plz, stadt)
             
             record = CustomerRecord(
                 customer_id=self._generate_fraud_id(),
                 surname=self.faker.last_name(),
                 first_name=self.faker.first_name(),
-                address=self.faker.address().replace("\n", ", "),
+                strasse=strasse,
+                hausnummer=hausnummer,
+                plz=plz,
+                stadt=stadt,
+                address=address,
                 iban=self.faker.iban(),
                 email=self.faker.email(),
                 date_of_birth=suspicious_dob,

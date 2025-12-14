@@ -68,10 +68,28 @@ class GraphDetector(BaseDetector):
     def _compute_similarity(self, row1: pd.Series, row2: pd.Series) -> float:
         """Compute similarity between two records based on shared attributes."""
         similarity = 0.0
-        weights = {"iban": 0.4, "address": 0.3, "email": 0.2, "surname": 0.1}
+
+        has_structured_address = all(
+            c in row1.index and c in row2.index for c in ["strasse", "hausnummer", "plz", "stadt"]
+        )
+
+        weights = {
+            "iban": 0.38,
+            "email": 0.18,
+            "surname": 0.10,
+            # Prefer structured address parts when available
+            "strasse": 0.12,
+            "hausnummer": 0.06,
+            "plz": 0.08,
+            "stadt": 0.08,
+            # Fallback full address
+            "address": 0.18,
+        }
         total_weight = sum(weights.values())
         
         for field, weight in weights.items():
+            if field == "address" and has_structured_address:
+                continue
             if field in row1.index and field in row2.index:
                 val1 = str(row1[field]).lower() if pd.notna(row1[field]) else ""
                 val2 = str(row2[field]).lower() if pd.notna(row2[field]) else ""

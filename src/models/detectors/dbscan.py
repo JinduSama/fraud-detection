@@ -74,11 +74,15 @@ class DBSCANDetector(BaseDetector):
     """
     
     DEFAULT_FIELD_WEIGHTS = {
-        "surname": 0.25,
-        "first_name": 0.20,
-        "address": 0.20,
-        "email": 0.15,
-        "iban": 0.20,
+        "surname": 0.20,
+        "first_name": 0.16,
+        "email": 0.12,
+        "iban": 0.17,
+        "strasse": 0.08,
+        "hausnummer": 0.04,
+        "plz": 0.03,
+        "stadt": 0.02,
+        "address": 0.18,
     }
     
     def __init__(
@@ -132,8 +136,15 @@ class DBSCANDetector(BaseDetector):
         """Compute weighted distance between two records."""
         total_distance = 0.0
         total_weight = 0.0
+
+        has_structured_address = all(
+            f"{c}_normalized" in row1.index and f"{c}_normalized" in row2.index
+            for c in ["strasse", "hausnummer", "plz", "stadt"]
+        )
         
         for field, weight in self.field_weights.items():
+            if field == "address" and has_structured_address:
+                continue
             norm_field = f"{field}_normalized"
             
             if norm_field in row1.index and norm_field in row2.index:

@@ -115,6 +115,25 @@ class FeatureExtractor:
         return re.sub(r"\s+", "", str(iban)).upper()
 
     @staticmethod
+    def format_address(strasse: str, hausnummer: str, plz: str, stadt: str) -> str:
+        """Format a simple address string from structured fields."""
+        street_part = " ".join(p for p in [str(strasse or "").strip(), str(hausnummer or "").strip()] if p)
+        city_part = " ".join(p for p in [str(plz or "").strip(), str(stadt or "").strip()] if p)
+        if street_part and city_part:
+            return f"{street_part}, {city_part}"
+        return street_part or city_part
+
+    def _get_address_text(self, row: pd.Series) -> str:
+        """Prefer structured address fields; fall back to legacy `address`."""
+        strasse = self._safe_str(row.get("strasse", "")).strip()
+        hausnummer = self._safe_str(row.get("hausnummer", "")).strip()
+        plz = self._safe_str(row.get("plz", "")).strip()
+        stadt = self._safe_str(row.get("stadt", "")).strip()
+        if any([strasse, hausnummer, plz, stadt]):
+            return self.format_address(strasse, hausnummer, plz, stadt)
+        return self._safe_str(row.get("address", "")).strip()
+
+    @staticmethod
     def _is_all_same(text: str) -> int:
         if not text:
             return 0
@@ -159,8 +178,8 @@ class FeatureExtractor:
     def _extract_string_length_features(self, row: pd.Series) -> dict:
         """Extract string length features."""
         features = {}
-        
-        for col in ['surname', 'first_name', 'address']:
+
+        for col in ["surname", "first_name", "address", "strasse", "hausnummer", "plz", "stadt"]:
             if col in row.index:
                 val = str(row[col]) if pd.notna(row[col]) else ""
                 features[f'len_{col}'] = len(val)
@@ -170,8 +189,8 @@ class FeatureExtractor:
     def _extract_complexity_features(self, row: pd.Series) -> dict:
         """Extract complexity features (digits, special chars, case, repeats, vowels)."""
         features = {}
-        
-        for col in ['surname', 'first_name', 'email', 'address']:
+
+        for col in ["surname", "first_name", "email", "address", "strasse", "hausnummer", "plz", "stadt"]:
             if col in row.index:
                 val = str(row[col]) if pd.notna(row[col]) else ""
                 
@@ -351,7 +370,7 @@ class FeatureExtractor:
         surname_raw = self._safe_str(row.get("surname", ""))
         first_name_raw = self._safe_str(row.get("first_name", ""))
         email_raw = self._safe_str(row.get("email", ""))
-        address_raw = self._safe_str(row.get("address", ""))
+        address_raw = self._get_address_text(row)
         dob = row.get("date_of_birth")
 
         local_raw, _ = self.extract_email_components(email_raw)
@@ -445,7 +464,7 @@ class FeatureExtractor:
         features['email_domain_common'] = int(domain in common_domains)
         
         # Check for PO Box / Packstation in address (German context)
-        address = str(row.get('address', '')).lower() if pd.notna(row.get('address')) else ""
+        address = self._get_address_text(row).lower()
         # Includes standard PO Box terms and German specific delivery points
         pobox_terms = [
             'postfach',      # PO Box
@@ -522,10 +541,25 @@ class FeatureExtractor:
             iban_counts = df['iban'].value_counts()
             network_features['shared_iban_count'] = df['iban'].map(iban_counts).fillna(1).astype(int)
         
-        # Shared address count
-        if 'address' in df.columns:
-            addr_counts = df['address'].value_counts()
-            network_features['shared_address_count'] = df['address'].map(addr_counts).fillna(1).astype(int)
+        # Shared address counts
+        has_structured = all(c in df.columns for c in ["strasse", "hausnummer", "plz", "stadt"])
+        if has_structured:
+            # Normalize street/city for grouping robustness
+            street_norm = df["strasse"].fillna("").astype(str).apply(self.normalize_text)
+            city_norm = df["stadt"].fillna("").astype(str).apply(self.normalize_text)
+            house = df["hausnummer"].fillna("").astype(str).str.strip()
+            plz = df["plz"].fillna("").astype(str).str.strip()
+
+            network_features["shared_strasse_count"] = street_norm.map(street_norm.value_counts()).fillna(1).astype(int)
+            network_features["shared_stadt_count"] = city_norm.map(city_norm.value_counts()).fillna(1).astype(int)
+            network_features["shared_plz_count"] = plz.map(plz.value_counts()).fillna(1).astype(int)
+            network_features["shared_hausnummer_count"] = house.map(house.value_counts()).fillna(1).astype(int)
+
+            full_key = (street_norm + "|" + house + "|" + plz + "|" + city_norm)
+            network_features["shared_full_address_count"] = full_key.map(full_key.value_counts()).fillna(1).astype(int)
+        elif "address" in df.columns:
+            addr_counts = df["address"].value_counts()
+            network_features["shared_address_count"] = df["address"].map(addr_counts).fillna(1).astype(int)
         
         # Shared email domain count
         if 'email' in df.columns:
@@ -540,7 +574,11 @@ class FeatureExtractor:
         targets = {
             "surname": self._safe_str(row.get("surname", "")),
             "first_name": self._safe_str(row.get("first_name", "")),
-            "address": self._safe_str(row.get("address", "")),
+            "address": self._get_address_text(row),
+            "strasse": self._safe_str(row.get("strasse", "")),
+            "hausnummer": self._safe_str(row.get("hausnummer", "")),
+            "plz": self._safe_str(row.get("plz", "")),
+            "stadt": self._safe_str(row.get("stadt", "")),
         }
 
         email = self._safe_str(row.get("email", ""))
@@ -579,18 +617,39 @@ class FeatureExtractor:
             "address_has_street_keyword": 0,
         }
 
+        # Prefer structured parts
+        strasse = self._safe_str(row.get("strasse", "")).strip()
+        hausnummer = self._safe_str(row.get("hausnummer", "")).strip()
+        plz = self._safe_str(row.get("plz", "")).strip()
+
+        if any([strasse, hausnummer, plz]):
+            if hausnummer:
+                features["address_has_house_number"] = 1
+                features["address_house_number_len"] = len(hausnummer)
+            if plz:
+                features["address_has_postcode"] = 1
+                features["address_postcode_len"] = len(plz)
+
+            street_keywords = {
+                "strasse", "straße", "street", "st", "road", "rd", "avenue", "ave",
+                "allee", "platz", "gasse", "weg"
+            }
+            norm = self.normalize_text(strasse)
+            tokens = set(norm.split()) if norm else set()
+            features["address_has_street_keyword"] = int(any(k in tokens for k in street_keywords))
+            return features
+
+        # Fallback: parse legacy address string
         address = self._safe_str(row.get("address", "")).strip()
         if not address:
             return features
 
         addr_lower = address.lower()
-        # House number (very permissive)
         m_house = re.search(r"\b\d{1,5}[a-zA-Z]?\b", addr_lower)
         if m_house:
             features["address_has_house_number"] = 1
             features["address_house_number_len"] = len(m_house.group(0))
 
-        # Postcode (DE-like 5 digits; still useful as generic signal)
         m_zip = re.search(r"\b\d{5}\b", addr_lower)
         if m_zip:
             features["address_has_postcode"] = 1
@@ -684,7 +743,11 @@ if __name__ == "__main__":
         "customer_id": ["C001", "C002", "C003"],
         "surname": ["Mueller", "Smith", "RandomXYZ123"],
         "first_name": ["Hans", "John", "Test"],
-        "address": ["Main St 1", "Oak Ave 5", "123 Unknown Rd"],
+        "strasse": ["Main St", "Oak Ave", "Unknown Rd"],
+        "hausnummer": ["1", "5", "123"],
+        "plz": ["10115", "20095", "00000"],
+        "stadt": ["Berlin", "Hamburg", "Nowhere"],
+        "address": ["Main St 1, 10115 Berlin", "Oak Ave 5, 20095 Hamburg", "Unknown Rd 123, 00000 Nowhere"],
         "email": ["hans.mueller@gmail.com", "john@yahoo.com", "x1y2z3@fake.net"],
         "iban": ["DE89370400440532013000", "GB82WEST12345698765432", "DE11111111111111111111"],
         "date_of_birth": ["1990-01-01", "1985-06-15", "2000-01-01"],
