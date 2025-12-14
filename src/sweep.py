@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import math
+import random
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -94,6 +96,8 @@ def _generate_dataset_df(
 def _evaluate_run(
     *,
     seed: int,
+    num_records: int,
+    fraud_ratio: float,
     df: pd.DataFrame,
     config_path: Optional[str],
     detectors: list[str],
@@ -140,6 +144,8 @@ def _evaluate_run(
 
     return {
         "seed": seed,
+        "num_records": num_records,
+        "fraud_ratio": fraud_ratio,
         "detectors": ",".join(detectors),
         "eps": eps,
         "min_samples": min_samples,
@@ -163,8 +169,32 @@ def main() -> None:
     )
 
     # Data generation
-    parser.add_argument("--num-records", type=int, default=500, help="Legitimate records per run")
-    parser.add_argument("--fraud-ratio", type=float, default=0.02, help="Fraud ratio vs legitimate")
+    parser.add_argument(
+        "--num-records",
+        type=int,
+        default=500,
+        help="Legitimate records per run (single value; see also --num-records-list)",
+    )
+    parser.add_argument(
+        "--num-records-list",
+        type=int,
+        nargs="+",
+        default=None,
+        help="One or more legitimate-record counts to sweep (overrides --num-records)",
+    )
+    parser.add_argument(
+        "--fraud-ratio",
+        type=float,
+        default=0.02,
+        help="Fraud ratio vs legitimate (single value; see also --fraud-ratios)",
+    )
+    parser.add_argument(
+        "--fraud-ratios",
+        type=float,
+        nargs="+",
+        default=None,
+        help="One or more fraud ratios to sweep (overrides --fraud-ratio)",
+    )
     parser.add_argument("--locale", type=str, default="de_DE", help="Faker locale")
 
     # Seeds
@@ -247,9 +277,36 @@ def main() -> None:
         help="Output CSV path (default: data/sweeps/sweep_<timestamp>.csv)",
     )
 
+    parser.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="Also write an aggregated CSV across seeds (mean/std per parameter combo).",
+    )
+    parser.add_argument(
+        "--aggregate-output",
+        type=str,
+        default=None,
+        help="Aggregated CSV path (default: <output>_agg.csv)",
+    )
+
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="Shuffle the full parameter grid before running (requires materializing the grid).",
+    )
+    parser.add_argument(
+        "--shuffle-seed",
+        type=int,
+        default=0,
+        help="Random seed for --shuffle (for reproducible capped sweeps).",
+    )
+
     args = parser.parse_args()
 
     seeds = _iter_seeds(args)
+
+    num_records_list = list(args.num_records_list) if args.num_records_list else [args.num_records]
+    fraud_ratio_list = list(args.fraud_ratios) if args.fraud_ratios else [args.fraud_ratio]
 
     if args.detector_sets:
         detector_sets = [_parse_detector_set(s) for s in args.detector_sets]
@@ -275,23 +332,52 @@ def main() -> None:
         out_path = Path("data") / "sweeps" / f"sweep_{ts}.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    grid = itertools.product(
+    agg_path: Optional[Path]
+    if args.aggregate:
+        if args.aggregate_output:
+            agg_path = Path(args.aggregate_output)
+        else:
+            agg_path = out_path.with_name(f"{out_path.stem}_agg{out_path.suffix}")
+        agg_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        agg_path = None
+
+    grid_lists = [
         seeds,
+        num_records_list,
+        fraud_ratio_list,
         detector_sets,
-        args.eps,
-        args.min_samples,
-        args.distance_metrics,
-        args.fusion_strategies,
-        args.thresholds,
+        list(args.eps),
+        list(args.min_samples),
+        list(args.distance_metrics),
+        list(args.fusion_strategies),
+        list(args.thresholds),
         if_contaminations,
         graph_thresholds,
-    )
+    ]
+
+    total_grid_size = int(math.prod(len(lst) for lst in grid_lists))
+
+    grid_iter: itertools.product | list[tuple]
+    if args.shuffle:
+        # Shuffling requires materializing the whole grid.
+        if total_grid_size > 500_000:
+            raise SystemExit(
+                f"Grid has {total_grid_size:,} combinations; refusing to materialize for --shuffle. "
+                "Reduce the sweep lists or disable --shuffle."
+            )
+        grid_iter = list(itertools.product(*grid_lists))
+        random.Random(args.shuffle_seed).shuffle(grid_iter)
+    else:
+        grid_iter = itertools.product(*grid_lists)
 
     results: list[dict] = []
     total = 0
 
     for (
         seed,
+        num_records,
+        fraud_ratio,
         detectors,
         eps,
         min_samples,
@@ -300,20 +386,22 @@ def main() -> None:
         threshold,
         if_contamination,
         graph_threshold,
-    ) in grid:
+    ) in grid_iter:
         total += 1
         if args.max_runs is not None and len(results) >= args.max_runs:
             break
 
         df = _generate_dataset_df(
-            num_legitimate=args.num_records,
-            fraud_ratio=args.fraud_ratio,
+            num_legitimate=num_records,
+            fraud_ratio=fraud_ratio,
             seed=seed,
             locale=args.locale,
         )
 
         row = _evaluate_run(
             seed=seed,
+            num_records=num_records,
+            fraud_ratio=fraud_ratio,
             df=df,
             config_path=args.config,
             detectors=detectors,
@@ -347,9 +435,59 @@ def main() -> None:
 
     df_out.to_csv(out_path, index=False)
 
+    if agg_path is not None:
+        group_cols = [
+            "num_records",
+            "fraud_ratio",
+            "detectors",
+            "eps",
+            "min_samples",
+            "distance_metric",
+            "fusion_strategy",
+            "threshold",
+            "if_contamination",
+            "graph_similarity_threshold",
+        ]
+
+        metric_cols = [
+            "precision",
+            "recall",
+            "f1_score",
+            "false_positives",
+            "false_negatives",
+            "flagged",
+            "actual_frauds",
+            "records",
+        ]
+
+        agg = (
+            df_out.groupby(group_cols, dropna=False)
+            .agg(
+                runs=("seed", "count"),
+                **{f"{c}_mean": (c, "mean") for c in metric_cols},
+                **{f"{c}_std": (c, "std") for c in metric_cols},
+                precision_min=("precision", "min"),
+                recall_min=("recall", "min"),
+                f1_min=("f1_score", "min"),
+                precision_max=("precision", "max"),
+                recall_max=("recall", "max"),
+                f1_max=("f1_score", "max"),
+            )
+            .reset_index()
+        )
+
+        # Prefer high average F1, then higher min recall (stability), then lower F1 variance.
+        agg = agg.sort_values(
+            by=["f1_score_mean", "recall_min", "f1_score_std"],
+            ascending=[False, False, True],
+        )
+        agg.to_csv(agg_path, index=False)
+
     print("\nTop 10 configurations (sorted):")
     cols = [
         "seed",
+        "num_records",
+        "fraud_ratio",
         "detectors",
         "eps",
         "min_samples",
@@ -366,6 +504,27 @@ def main() -> None:
     ]
     print(df_out[cols].head(10).to_string(index=False))
     print(f"\nSaved: {out_path}")
+
+    if agg_path is not None:
+        print("\nTop 10 aggregated configurations (mean/std across seeds):")
+        agg_cols = [
+            "runs",
+            "num_records",
+            "fraud_ratio",
+            "detectors",
+            "eps",
+            "min_samples",
+            "distance_metric",
+            "fusion_strategy",
+            "threshold",
+            "precision_mean",
+            "recall_mean",
+            "f1_score_mean",
+            "recall_min",
+            "f1_score_std",
+        ]
+        print(agg[agg_cols].head(10).to_string(index=False))
+        print(f"\nSaved aggregated: {agg_path}")
 
 
 if __name__ == "__main__":

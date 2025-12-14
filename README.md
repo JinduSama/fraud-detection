@@ -95,7 +95,8 @@ Run a small grid over multiple random seeds and parameter settings and export a 
 ```bash
 uv run python -m src.sweep \
   --seeds 1 2 3 4 5 \
-  --num-records 500 --fraud-ratio 0.02 \
+  --num-records-list 200 500 1000 \
+  --fraud-ratios 0.02 0.05 0.10 \
   --detector-sets dbscan,isolation_forest dbscan,isolation_forest,graph \
   --eps 0.3 0.35 0.4 \
   --thresholds 0.6 0.7 0.8 \
@@ -104,6 +105,38 @@ uv run python -m src.sweep \
 ```
 
 This writes a sortable CSV with precision/recall/F1 + confusion-matrix counts per run.
+
+You can also write an aggregated file (mean/std across seeds per parameter combo):
+
+```bash
+uv run python -m src.sweep \
+  --seeds 1 2 3 4 5 \
+  --num-records-list 200 500 \
+  --fraud-ratios 0.02 0.10 \
+  --detector-sets dbscan,isolation_forest dbscan,isolation_forest,graph \
+  --eps 0.3 0.35 0.4 \
+  --thresholds 0.6 0.7 0.8 \
+  --fusion-strategies weighted_avg voting \
+  --aggregate \
+  --output data/sweeps/sweep_results.csv
+```
+
+If you want broad exploration with a run cap, you can shuffle the grid so `--max-runs` samples the space:
+
+```bash
+uv run python -m src.sweep \
+  --seeds 1 2 3 4 5 \
+  --num-records-list 200 500 \
+  --fraud-ratios 0.02 0.10 \
+  --detector-sets dbscan,isolation_forest dbscan,isolation_forest,graph \
+  --eps 0.3 0.35 0.4 \
+  --thresholds 0.6 0.7 0.8 \
+  --fusion-strategies weighted_avg voting \
+  --shuffle --shuffle-seed 0 \
+  --max-runs 200 \
+  --aggregate \
+  --output data/sweeps/sweep_results.csv
+```
 
 ### Individual Components
 
