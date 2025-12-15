@@ -8,6 +8,7 @@ A Python-based fraud detection prototype that generates synthetic customer data 
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Production Scoring](#production-scoring)
 - [Configuration](#configuration)
 - [Detectors & Strategies](#detectors)
 - [Testing](#testing)
@@ -56,6 +57,7 @@ fraud-detection-synthetic/
 │   ├── detect_fraud.py         # Fraud detection pipeline
 │   ├── evaluate.py             # Full pipeline with evaluation
 │   ├── sweep.py                # Parameter sweep for tuning
+│   ├── train_production.py     # Train production models (monthly)
 │   ├── data/
 │   │   ├── generator.py        # Synthetic customer data generator
 │   │   ├── fraud_injector.py   # Fraud pattern injection
@@ -68,20 +70,28 @@ fraud-detection-synthetic/
 │   │   ├── ensemble.py         # Ensemble detector with fusion strategies
 │   │   ├── explainer.py        # SHAP-based explainability
 │   │   └── detectors/
-│   │       ├── isolation_forest.py
-│   │       ├── lof.py
+│   │       ├── isolation_forest.py  # + save_model/load_model
+│   │       ├── lof.py               # + save_model/load_model
 │   │       ├── dbscan.py
 │   │       └── graph.py
+│   ├── scoring/                # NEW: Production real-time scoring
+│   │   ├── intrinsic_features.py   # Features without comparison
+│   │   ├── similarity_index.py     # FAISS-based ANN search
+│   │   └── realtime.py             # RealTimeScorer class
 │   ├── evaluation/
 │   │   └── metrics.py          # Precision, Recall, F1, confusion matrix
 │   └── utils/
 │       ├── text.py             # Shared text normalization & string distances
 │       ├── address.py          # Address normalization utilities
 │       └── logging.py          # Structured logging
-├── tests/                      # Test suite
+├── models/                     # Saved production models
+│   └── production/             # Output from train_production.py
+├── tests/                      # Test suite (76 tests)
 │   ├── conftest.py             # Shared pytest fixtures
 │   ├── test_config.py          # Configuration validation tests
 │   ├── test_utils.py           # Utility function tests
+│   ├── test_scoring/           # Real-time scoring tests
+│   │   └── test_intrinsic_features.py
 │   ├── test_evaluation/
 │   │   └── test_metrics.py     # Metrics calculation tests
 │   └── test_integration/
@@ -102,6 +112,9 @@ fraud-detection-synthetic/
 git clone <repository-url>
 cd agents
 uv sync
+
+# For production real-time scoring (FAISS)
+uv pip install faiss-cpu
 ```
 
 This installs all dependencies including Pydantic v2 for configuration validation.
@@ -293,6 +306,99 @@ Example explanation:
 }
 ```
 
+---
+
+## Production Scoring
+
+For real-world use with your own data, we provide a **two-tier scoring system** optimized for production:
+
+| Tier | What | Speed | Use Case |
+|------|------|-------|----------|
+| **Tier 1: Intrinsic** | Features from record itself (IBAN validation, email patterns, entropy) | <10ms | Real-time scoring |
+| **Tier 2: Similarity** | FAISS-based search against historical records | <50ms | Duplicate/ring detection |
+
+### Training (Monthly)
+
+Train the production scorer on historical data:
+
+```bash
+# Install production dependencies
+uv pip install faiss-cpu
+
+# Train on your historical data
+uv run python -m src.train_production --input data/historical_customers.csv
+
+# Or generate synthetic data for testing
+uv run python -m src.train_production --generate --num-records 5000
+```
+
+Models are saved to `models/production/` by default.
+
+### Real-Time Scoring
+
+```python
+from src.scoring import RealTimeScorer, AlertLevel
+
+# Load trained models
+scorer = RealTimeScorer.load("models/production/")
+
+# Score a new application
+new_application = {
+    "customer_id": "NEW-001",
+    "surname": "Mueller",
+    "first_name": "Hans",
+    "email": "hans.mueller@gmail.com",
+    "iban": "DE89370400440532013000",
+    "street": "Hauptstrasse",
+    "postal_code": "10115",
+    "city": "Berlin",
+    "date_of_birth": "1985-06-15",
+}
+
+result = scorer.score(new_application)
+
+print(f"Alert Level: {result.alert_level.value}")  # HIGH, MEDIUM, or LOW
+print(f"Score: {result.combined_score:.2f}")
+print(f"Flags: {result.flags}")
+print(f"Similar Records: {len(result.similar_records)}")
+
+if result.alert_level == AlertLevel.HIGH:
+    send_to_review_queue(new_application)
+```
+
+### Intrinsic Features (No Comparison Needed)
+
+These features are extracted instantly from a single record:
+
+| Feature | Fraud Signal |
+|---------|--------------|
+| `iban_valid` | Invalid checksum = fake bank account |
+| `iban_country_matches_address` | Mismatch = identity mixing |
+| `email_is_disposable` | Tempmail.com etc. = throwaway |
+| `email_entropy` | High randomness = generated |
+| `name_has_digits` | "John123" = data quality issue |
+| `keyboard_pattern_score` | "asdfgh" = lazy fraud |
+| `postal_code_valid` | Invalid format = fabricated |
+
+### Input Schema for Real Data
+
+| Column | Type | Required | Notes |
+|--------|------|----------|-------|
+| `customer_id` | string | ✅ | Unique identifier |
+| `surname` | string | ✅ | Used for phonetic blocking |
+| `first_name` | string | ✅ | |
+| `email` | string | ✅ | Domain used for blocking |
+| `iban` | string | ✅ | Validated, used for exact matching |
+| `street` | string | ⚠️ Preferred | Structured address |
+| `house_number` | string | ⚠️ Preferred | |
+| `postal_code` | string | ⚠️ Preferred | |
+| `city` | string | ⚠️ Preferred | |
+| `date_of_birth` | date | ⚠️ Preferred | Important identity variable |
+| `address` | string | Fallback | Used if structured parts missing |
+| `is_fraud` | boolean | For validation | Ground truth (not needed for scoring) |
+
+---
+
 ## Configuration
 
 Configuration is managed via YAML files with **Pydantic v2 validation**. Invalid settings raise clear errors at startup.
@@ -402,7 +508,7 @@ Detection Rate by Fraud Type:
 
 ## Testing
 
-The project includes a comprehensive test suite with 62 tests:
+The project includes a comprehensive test suite with 76 tests:
 
 ```bash
 # Run all tests
@@ -411,6 +517,7 @@ uv run pytest tests/ -v
 # Run specific test categories
 uv run pytest tests/test_config.py -v      # Configuration validation
 uv run pytest tests/test_utils.py -v        # Utility functions
+uv run pytest tests/test_scoring/ -v        # Real-time scoring
 uv run pytest tests/test_evaluation/ -v     # Metrics calculation
 uv run pytest tests/test_integration/ -v    # End-to-end pipeline
 
@@ -424,6 +531,7 @@ uv run pytest tests/ --cov=src --cov-report=html
 |-----------|----------|
 | `test_config.py` | Pydantic validation, env overrides, path config |
 | `test_utils.py` | Text normalization, string distances, address utilities |
+| `test_scoring/` | Intrinsic features, IBAN validation, email patterns |
 | `test_evaluation/test_metrics.py` | Precision, recall, F1, confusion matrix |
 | `test_integration/test_pipeline.py` | All detectors, ensemble, feature extraction |
 

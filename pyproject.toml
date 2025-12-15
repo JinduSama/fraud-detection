@@ -27,6 +27,10 @@ full = [
     "structlog>=24.0.0",      # Structured logging
     "psutil>=5.9.0",          # Memory monitoring
 ]
+production = [
+    "faiss-cpu>=1.7.4",       # Fast similarity search (CPU)
+    "joblib>=1.3.0",          # Model persistence
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -38,6 +42,7 @@ dev = [
 generate-dataset = "src.generate_dataset:main"
 detect-fraud = "src.detect_fraud:main"
 evaluate = "src.evaluate:main"
+train-production = "src.train_production:main"
 
 [build-system]
 requires = ["hatchling"]

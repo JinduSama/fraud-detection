@@ -5,8 +5,10 @@ Implements anomaly detection using LOF algorithm which measures
 local density deviation of samples compared to their neighbors.
 """
 
+from pathlib import Path
 from typing import Optional
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import LocalOutlierFactor
@@ -232,6 +234,62 @@ class LocalOutlierFactorDetector(BaseDetector):
     def model(self) -> Optional[LocalOutlierFactor]:
         """Access the underlying sklearn model."""
         return self._model
+    
+    def save_model(self, path: str | Path) -> None:
+        """Save the fitted model to disk.
+        
+        Args:
+            path: Path to save the model file (e.g., 'models/lof_detector.joblib').
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Cannot save unfitted detector.")
+        
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        joblib.dump({
+            "model": self._model,
+            "scaler": self._scaler,
+            "feature_names": self._feature_names,
+            "training_lof_scores": self._training_lof_scores,
+            "n_neighbors": self.n_neighbors,
+            "contamination": self.contamination,
+            "metric": self.metric,
+            "novelty": self.novelty,
+            "n_jobs": self.n_jobs,
+            "name": self.name,
+        }, path)
+    
+    @classmethod
+    def load_model(cls, path: str | Path) -> "LocalOutlierFactorDetector":
+        """Load a fitted model from disk.
+        
+        Args:
+            path: Path to the saved model file.
+            
+        Returns:
+            Loaded LocalOutlierFactorDetector instance.
+        """
+        path = Path(path)
+        data = joblib.load(path)
+        
+        instance = cls(
+            n_neighbors=data["n_neighbors"],
+            contamination=data["contamination"],
+            metric=data["metric"],
+            novelty=data["novelty"],
+            n_jobs=data["n_jobs"],
+            name=data["name"],
+        )
+        
+        instance._model = data["model"]
+        instance._scaler = data["scaler"]
+        instance._feature_names = data["feature_names"]
+        instance._training_lof_scores = data["training_lof_scores"]
+        instance._feature_extractor = FeatureExtractor(compute_network_features=True)
+        instance._is_fitted = True
+        
+        return instance
 
 
 if __name__ == "__main__":
