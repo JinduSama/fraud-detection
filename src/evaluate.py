@@ -1,11 +1,9 @@
-"""
-Full Pipeline Evaluation Script.
+"""Full Pipeline Evaluation Script.
 
 Runs the complete pipeline: Generate -> Detect -> Evaluate
 and produces a comprehensive performance report with visualization.
 
-TASK-009: Create reporting script for full pipeline execution.
-Enhanced with confusion matrix, PR curves, and stratified evaluation.
+Includes confusion matrix, PR curves, and stratified evaluation.
 """
 
 import argparse

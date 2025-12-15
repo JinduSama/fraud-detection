@@ -1,10 +1,7 @@
-"""
-Synthetic Customer Data Generator.
+"""Synthetic Customer Data Generator.
 
 Generates legitimate customer records using Faker library with realistic
 distributions for telecommunications customer data.
-
-TASK-002: Create src/data/generator.py to generate legitimate customer records.
 """
 
 from dataclasses import dataclass

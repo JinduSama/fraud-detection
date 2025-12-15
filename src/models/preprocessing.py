@@ -1,10 +1,7 @@
-"""
-Data Preprocessing Module.
+"""Data Preprocessing Module.
 
 Provides data cleaning and feature engineering for fraud detection,
 including text normalization and similarity feature extraction.
-
-TASK-005: Create src/models/preprocessing.py for data cleaning and feature engineering.
 """
 
 import re

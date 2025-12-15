@@ -1,6 +1,15 @@
 # Fraud Detection System Configuration
 # =====================================
 
+# File Paths
+paths:
+  data_dir: data
+  detected_fraud: detected_fraud.csv
+  customer_dataset: customer_dataset.csv
+  evaluation_report: evaluation_report.txt
+  explanations: explanations.json
+  plots_dir: plots
+
 # Detector Settings
 detectors:
   dbscan:

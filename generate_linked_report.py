@@ -214,4 +214,17 @@ def generate_linked_cases_report(
 
 
 if __name__ == "__main__":
-    generate_linked_cases_report()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate linked cases report")
+    parser.add_argument("--config", type=str, help="Path to config file")
+    parser.add_argument("--input", type=str, help="Override input file path")
+    parser.add_argument("--output", type=str, help="Override output file path")
+    args = parser.parse_args()
+    
+    cfg = load_config(args.config) if args.config else None
+    generate_linked_cases_report(
+        config=cfg,
+        detected_path=args.input,
+        output_path=args.output,
+    )

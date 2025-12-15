@@ -1,314 +1,367 @@
-"""
-Configuration Management Module.
+"""Configuration Management Module.
 
 Provides typed configuration for fraud detection system with
-support for YAML files and environment variable overrides.
+support for YAML files, environment variable overrides, and validation.
+
+Uses Pydantic v2 for robust configuration validation.
 """
 
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Any
+from typing import Literal, Optional
 
-try:
-    import yaml
-    HAS_YAML = True
-except ImportError:
-    HAS_YAML = False
-
-try:
-    from pydantic import BaseModel, Field
-    HAS_PYDANTIC = True
-except ImportError:
-    HAS_PYDANTIC = False
+import yaml
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-@dataclass
-class DBSCANConfig:
+class PathsConfig(BaseModel):
+    """Configuration for file paths."""
+
+    data_dir: str = Field(default="data", description="Base directory for data files")
+    detected_fraud: str = Field(
+        default="detected_fraud.csv", description="Output file for detected fraud"
+    )
+    customer_dataset: str = Field(
+        default="customer_dataset.csv", description="Input customer dataset"
+    )
+    evaluation_report: str = Field(
+        default="evaluation_report.txt", description="Evaluation report file"
+    )
+    explanations: str = Field(
+        default="explanations.json", description="SHAP explanations output"
+    )
+    plots_dir: str = Field(default="plots", description="Directory for plot outputs")
+
+    def get_path(self, file_key: str) -> Path:
+        """Get full path for a data file.
+
+        Args:
+            file_key: One of 'detected_fraud', 'customer_dataset',
+                     'evaluation_report', 'explanations'.
+
+        Returns:
+            Full path combining data_dir and the file name.
+        """
+        file_map = {
+            "detected_fraud": self.detected_fraud,
+            "customer_dataset": self.customer_dataset,
+            "evaluation_report": self.evaluation_report,
+            "explanations": self.explanations,
+        }
+        return Path(self.data_dir) / file_map.get(file_key, file_key)
+
+
+class DBSCANConfig(BaseModel):
     """Configuration for DBSCAN detector."""
-    enabled: bool = True
-    eps: float = 0.35
-    min_samples: int = 2
-    distance_metric: str = "jaro_winkler"
-    use_sparse: bool = True
+
+    enabled: bool = Field(default=True, description="Enable DBSCAN detector")
+    eps: float = Field(
+        default=0.35, ge=0.0, le=1.0, description="Max distance for clustering"
+    )
+    min_samples: int = Field(
+        default=2, ge=1, description="Minimum samples to form cluster"
+    )
+    distance_metric: Literal["jaro_winkler", "levenshtein", "damerau"] = Field(
+        default="jaro_winkler", description="String distance metric"
+    )
+    use_sparse: bool = Field(default=True, description="Use sparse distance matrix")
 
 
-@dataclass
-class IsolationForestConfig:
+class IsolationForestConfig(BaseModel):
     """Configuration for Isolation Forest detector."""
-    enabled: bool = True
-    contamination: str = "auto"
-    n_estimators: int = 100
-    max_samples: str = "auto"
-    random_state: Optional[int] = 42
+
+    enabled: bool = Field(default=True, description="Enable Isolation Forest detector")
+    contamination: str = Field(
+        default="auto",
+        description="Expected proportion of outliers, or 'auto'",
+    )
+    n_estimators: int = Field(
+        default=100, ge=1, description="Number of base estimators"
+    )
+    max_samples: str = Field(default="auto", description="Samples per estimator")
+    random_state: Optional[int] = Field(
+        default=42, description="Random seed for reproducibility"
+    )
+
+    @field_validator("contamination")
+    @classmethod
+    def validate_contamination(cls, v: str) -> str:
+        """Validate contamination is 'auto' or a valid float string."""
+        if v == "auto":
+            return v
+        try:
+            val = float(v)
+            if not 0.0 < val <= 0.5:
+                raise ValueError("contamination must be in (0.0, 0.5]")
+        except ValueError:
+            raise ValueError("contamination must be 'auto' or a float in (0.0, 0.5]")
+        return v
 
 
-@dataclass
-class LOFConfig:
+class LOFConfig(BaseModel):
     """Configuration for Local Outlier Factor detector."""
-    enabled: bool = False
-    n_neighbors: int = 20
-    contamination: str = "auto"
-    metric: str = "minkowski"
+
+    enabled: bool = Field(default=False, description="Enable LOF detector")
+    n_neighbors: int = Field(default=20, ge=1, description="Number of neighbors for LOF")
+    contamination: str = Field(
+        default="auto", description="Expected proportion of outliers"
+    )
+    metric: str = Field(default="minkowski", description="Distance metric")
 
 
-@dataclass
-class GraphConfig:
+class GraphConfig(BaseModel):
     """Configuration for Graph-based detector."""
-    enabled: bool = False
-    similarity_threshold: float = 0.7
-    min_community_size: int = 3
-    use_betweenness: bool = True
-    betweenness_threshold: float = 0.1
+
+    enabled: bool = Field(default=False, description="Enable Graph detector")
+    similarity_threshold: float = Field(
+        default=0.7, ge=0.0, le=1.0, description="Edge creation threshold"
+    )
+    min_community_size: int = Field(
+        default=3, ge=2, description="Minimum community size"
+    )
+    use_betweenness: bool = Field(
+        default=True, description="Use betweenness centrality"
+    )
+    betweenness_threshold: float = Field(
+        default=0.1, ge=0.0, le=1.0, description="Betweenness threshold for flagging"
+    )
 
 
-@dataclass
-class DetectorConfigs:
+class DetectorConfigs(BaseModel):
     """Container for all detector configurations."""
-    dbscan: DBSCANConfig = field(default_factory=DBSCANConfig)
-    isolation_forest: IsolationForestConfig = field(default_factory=IsolationForestConfig)
-    lof: LOFConfig = field(default_factory=LOFConfig)
-    graph: GraphConfig = field(default_factory=GraphConfig)
+
+    dbscan: DBSCANConfig = Field(default_factory=DBSCANConfig)
+    isolation_forest: IsolationForestConfig = Field(
+        default_factory=IsolationForestConfig
+    )
+    lof: LOFConfig = Field(default_factory=LOFConfig)
+    graph: GraphConfig = Field(default_factory=GraphConfig)
 
 
-@dataclass
-class EnsembleConfig:
+class EnsembleConfig(BaseModel):
     """Configuration for ensemble detector."""
-    strategy: str = "weighted_avg"
-    threshold: float = 0.5
-    voting_threshold: float = 0.5
-    weights: dict = field(default_factory=lambda: {
-        "dbscan": 0.4,
-        "isolation_forest": 0.4,
-        "lof": 0.1,
-        "graph": 0.1
-    })
+
+    strategy: Literal["max", "weighted_avg", "voting", "stacking"] = Field(
+        default="weighted_avg", description="Fusion strategy"
+    )
+    threshold: float = Field(
+        default=0.7, ge=0.0, le=1.0, description="Decision threshold"
+    )
+    voting_threshold: float = Field(
+        default=0.7, ge=0.0, le=1.0, description="Voting threshold for voting strategy"
+    )
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "dbscan": 0.4,
+            "isolation_forest": 0.4,
+            "lof": 0.1,
+            "graph": 0.1,
+        },
+        description="Detector weights for weighted averaging",
+    )
+
+    @field_validator("weights")
+    @classmethod
+    def validate_weights(cls, v: dict[str, float]) -> dict[str, float]:
+        """Validate detector weights are non-negative."""
+        for name, weight in v.items():
+            if weight < 0:
+                raise ValueError(f"Weight for {name} must be non-negative")
+        return v
 
 
-@dataclass
-class LoggingConfig:
+class LoggingConfig(BaseModel):
     """Configuration for logging."""
-    level: str = "INFO"
-    format: str = "json"
-    log_file: Optional[str] = None
-    log_metrics: bool = True
+
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default="INFO", description="Log level"
+    )
+    format: Literal["json", "text"] = Field(default="json", description="Log format")
+    log_file: Optional[str] = Field(default=None, description="Log file path")
+    log_metrics: bool = Field(default=True, description="Log performance metrics")
 
 
-@dataclass
-class DataConfig:
+class DataConfig(BaseModel):
     """Configuration for data generation and processing."""
-    num_records: int = 500
-    fraud_ratio: float = 0.15
-    seed: int = 42
-    locale: str = "de_DE"
-    input_path: str = "data/customer_dataset.csv"
-    output_path: str = "data/detected_fraud.csv"
+
+    num_records: int = Field(
+        default=500, ge=1, description="Number of records to generate"
+    )
+    fraud_ratio: float = Field(
+        default=0.15, ge=0.0, le=1.0, description="Proportion of fraudulent records"
+    )
+    seed: int = Field(default=42, description="Random seed")
+    locale: str = Field(default="de_DE", description="Faker locale for data generation")
+    input_path: str = Field(
+        default="data/customer_dataset.csv", description="Input data path"
+    )
+    output_path: str = Field(
+        default="data/detected_fraud.csv", description="Output data path"
+    )
 
 
-@dataclass
-class FraudDetectionConfig:
+class FraudDetectionConfig(BaseModel):
     """Main configuration for the fraud detection system."""
-    detectors: DetectorConfigs = field(default_factory=DetectorConfigs)
-    ensemble: EnsembleConfig = field(default_factory=EnsembleConfig)
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
-    data: DataConfig = field(default_factory=DataConfig)
 
+    paths: PathsConfig = Field(default_factory=PathsConfig)
+    detectors: DetectorConfigs = Field(default_factory=DetectorConfigs)
+    ensemble: EnsembleConfig = Field(default_factory=EnsembleConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    data: DataConfig = Field(default_factory=DataConfig)
 
-def _deep_update(base_dict: dict, update_dict: dict) -> dict:
-    """Recursively update a dictionary."""
-    result = base_dict.copy()
-    for key, value in update_dict.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_update(result[key], value)
-        else:
-            result[key] = value
-    return result
+    model_config = {"extra": "forbid"}
 
-
-def _dict_to_config(data: dict) -> FraudDetectionConfig:
-    """Convert a dictionary to configuration objects."""
-    config = FraudDetectionConfig()
-    
-    if "detectors" in data:
-        detectors = data["detectors"]
-        if "dbscan" in detectors:
-            for key, value in detectors["dbscan"].items():
-                setattr(config.detectors.dbscan, key, value)
-        if "isolation_forest" in detectors:
-            for key, value in detectors["isolation_forest"].items():
-                setattr(config.detectors.isolation_forest, key, value)
-        if "lof" in detectors:
-            for key, value in detectors["lof"].items():
-                setattr(config.detectors.lof, key, value)
-        if "graph" in detectors:
-            for key, value in detectors["graph"].items():
-                setattr(config.detectors.graph, key, value)
-    
-    if "ensemble" in data:
-        for key, value in data["ensemble"].items():
-            setattr(config.ensemble, key, value)
-    
-    if "logging" in data:
-        for key, value in data["logging"].items():
-            setattr(config.logging, key, value)
-    
-    if "data" in data:
-        for key, value in data["data"].items():
-            setattr(config.data, key, value)
-    
-    return config
-
-
-def load_config(config_path: Optional[str] = None) -> FraudDetectionConfig:
-    """
-    Load configuration from YAML file with environment variable overrides.
-    
-    Args:
-        config_path: Path to YAML config file. If None, uses default config.
-        
-    Returns:
-        FraudDetectionConfig object.
-    """
-    config = FraudDetectionConfig()
-    
-    # Try to load from YAML file
-    if config_path and HAS_YAML:
-        path = Path(config_path)
-        if path.exists():
-            with open(path, "r") as f:
-                yaml_data = yaml.safe_load(f)
-                if yaml_data:
-                    config = _dict_to_config(yaml_data)
-    
-    # Apply environment variable overrides
-    config = _apply_env_overrides(config)
-    
-    return config
+    @model_validator(mode="after")
+    def sync_paths_with_data(self) -> "FraudDetectionConfig":
+        """Ensure data.input_path and data.output_path are consistent with paths."""
+        # Sync input/output paths from paths config
+        self.data.input_path = str(self.paths.get_path("customer_dataset"))
+        self.data.output_path = str(self.paths.get_path("detected_fraud"))
+        return self
 
 
 def _apply_env_overrides(config: FraudDetectionConfig) -> FraudDetectionConfig:
-    """Apply environment variable overrides to configuration."""
-    
+    """Apply environment variable overrides to configuration.
+
+    Supports the following environment variables:
+    - FRAUD_DBSCAN_EPS, FRAUD_DBSCAN_MIN_SAMPLES, FRAUD_DBSCAN_ENABLED
+    - FRAUD_IF_CONTAMINATION, FRAUD_IF_ESTIMATORS, FRAUD_IF_ENABLED
+    - FRAUD_LOF_NEIGHBORS, FRAUD_LOF_ENABLED
+    - FRAUD_GRAPH_ENABLED
+    - FRAUD_ENSEMBLE_STRATEGY, FRAUD_ENSEMBLE_THRESHOLD
+    - FRAUD_LOG_LEVEL, FRAUD_LOG_FILE
+    - FRAUD_DATA_SEED, FRAUD_DATA_RECORDS
+    """
+    # Create a mutable copy of the config
+    config_dict = config.model_dump()
+
     # DBSCAN overrides
     if os.getenv("FRAUD_DBSCAN_EPS"):
-        config.detectors.dbscan.eps = float(os.environ["FRAUD_DBSCAN_EPS"])
+        config_dict["detectors"]["dbscan"]["eps"] = float(os.environ["FRAUD_DBSCAN_EPS"])
     if os.getenv("FRAUD_DBSCAN_MIN_SAMPLES"):
-        config.detectors.dbscan.min_samples = int(os.environ["FRAUD_DBSCAN_MIN_SAMPLES"])
+        config_dict["detectors"]["dbscan"]["min_samples"] = int(
+            os.environ["FRAUD_DBSCAN_MIN_SAMPLES"]
+        )
     if os.getenv("FRAUD_DBSCAN_ENABLED"):
-        config.detectors.dbscan.enabled = os.environ["FRAUD_DBSCAN_ENABLED"].lower() == "true"
-    
+        config_dict["detectors"]["dbscan"]["enabled"] = (
+            os.environ["FRAUD_DBSCAN_ENABLED"].lower() == "true"
+        )
+
     # Isolation Forest overrides
     if os.getenv("FRAUD_IF_CONTAMINATION"):
-        config.detectors.isolation_forest.contamination = os.environ["FRAUD_IF_CONTAMINATION"]
+        config_dict["detectors"]["isolation_forest"]["contamination"] = os.environ[
+            "FRAUD_IF_CONTAMINATION"
+        ]
     if os.getenv("FRAUD_IF_ESTIMATORS"):
-        config.detectors.isolation_forest.n_estimators = int(os.environ["FRAUD_IF_ESTIMATORS"])
+        config_dict["detectors"]["isolation_forest"]["n_estimators"] = int(
+            os.environ["FRAUD_IF_ESTIMATORS"]
+        )
     if os.getenv("FRAUD_IF_ENABLED"):
-        config.detectors.isolation_forest.enabled = os.environ["FRAUD_IF_ENABLED"].lower() == "true"
-    
+        config_dict["detectors"]["isolation_forest"]["enabled"] = (
+            os.environ["FRAUD_IF_ENABLED"].lower() == "true"
+        )
+
     # LOF overrides
     if os.getenv("FRAUD_LOF_NEIGHBORS"):
-        config.detectors.lof.n_neighbors = int(os.environ["FRAUD_LOF_NEIGHBORS"])
+        config_dict["detectors"]["lof"]["n_neighbors"] = int(
+            os.environ["FRAUD_LOF_NEIGHBORS"]
+        )
     if os.getenv("FRAUD_LOF_ENABLED"):
-        config.detectors.lof.enabled = os.environ["FRAUD_LOF_ENABLED"].lower() == "true"
-    
+        config_dict["detectors"]["lof"]["enabled"] = (
+            os.environ["FRAUD_LOF_ENABLED"].lower() == "true"
+        )
+
     # Graph overrides
     if os.getenv("FRAUD_GRAPH_ENABLED"):
-        config.detectors.graph.enabled = os.environ["FRAUD_GRAPH_ENABLED"].lower() == "true"
-    
+        config_dict["detectors"]["graph"]["enabled"] = (
+            os.environ["FRAUD_GRAPH_ENABLED"].lower() == "true"
+        )
+
     # Ensemble overrides
     if os.getenv("FRAUD_ENSEMBLE_STRATEGY"):
-        config.ensemble.strategy = os.environ["FRAUD_ENSEMBLE_STRATEGY"]
+        config_dict["ensemble"]["strategy"] = os.environ["FRAUD_ENSEMBLE_STRATEGY"]
     if os.getenv("FRAUD_ENSEMBLE_THRESHOLD"):
-        config.ensemble.threshold = float(os.environ["FRAUD_ENSEMBLE_THRESHOLD"])
-    
+        config_dict["ensemble"]["threshold"] = float(
+            os.environ["FRAUD_ENSEMBLE_THRESHOLD"]
+        )
+
     # Logging overrides
     if os.getenv("FRAUD_LOG_LEVEL"):
-        config.logging.level = os.environ["FRAUD_LOG_LEVEL"]
+        config_dict["logging"]["level"] = os.environ["FRAUD_LOG_LEVEL"]
     if os.getenv("FRAUD_LOG_FILE"):
-        config.logging.log_file = os.environ["FRAUD_LOG_FILE"]
-    
+        config_dict["logging"]["log_file"] = os.environ["FRAUD_LOG_FILE"]
+
     # Data overrides
     if os.getenv("FRAUD_DATA_SEED"):
-        config.data.seed = int(os.environ["FRAUD_DATA_SEED"])
+        config_dict["data"]["seed"] = int(os.environ["FRAUD_DATA_SEED"])
     if os.getenv("FRAUD_DATA_RECORDS"):
-        config.data.num_records = int(os.environ["FRAUD_DATA_RECORDS"])
-    
+        config_dict["data"]["num_records"] = int(os.environ["FRAUD_DATA_RECORDS"])
+
+    return FraudDetectionConfig.model_validate(config_dict)
+
+
+def load_config(config_path: Optional[str] = None) -> FraudDetectionConfig:
+    """Load configuration from YAML file with environment variable overrides.
+
+    Args:
+        config_path: Path to YAML config file. If None, tries default locations:
+                    1. config/default.yaml
+                    2. Default FraudDetectionConfig values
+
+    Returns:
+        Validated FraudDetectionConfig object.
+
+    Raises:
+        ValueError: If configuration is invalid.
+    """
+    config_dict: dict = {}
+
+    # Determine config file path
+    if config_path:
+        path = Path(config_path)
+    else:
+        # Try default locations
+        path = Path("config/default.yaml")
+
+    # Load from YAML if exists
+    if path.exists():
+        with open(path, "r") as f:
+            config_dict = yaml.safe_load(f) or {}
+
+    # Create config from dict (Pydantic handles validation)
+    try:
+        config = FraudDetectionConfig.model_validate(config_dict)
+    except Exception as e:
+        raise ValueError(f"Invalid configuration: {e}") from e
+
+    # Apply environment variable overrides
+    config = _apply_env_overrides(config)
+
     return config
 
 
 def save_config(config: FraudDetectionConfig, config_path: str) -> None:
-    """
-    Save configuration to YAML file.
-    
+    """Save configuration to YAML file.
+
     Args:
         config: Configuration to save.
         config_path: Path to save YAML file.
     """
-    if not HAS_YAML:
-        raise ImportError("PyYAML is required to save config. Install with: pip install pyyaml")
-    
-    # Convert to dictionary
-    config_dict = {
-        "detectors": {
-            "dbscan": {
-                "enabled": config.detectors.dbscan.enabled,
-                "eps": config.detectors.dbscan.eps,
-                "min_samples": config.detectors.dbscan.min_samples,
-                "distance_metric": config.detectors.dbscan.distance_metric,
-                "use_sparse": config.detectors.dbscan.use_sparse,
-            },
-            "isolation_forest": {
-                "enabled": config.detectors.isolation_forest.enabled,
-                "contamination": config.detectors.isolation_forest.contamination,
-                "n_estimators": config.detectors.isolation_forest.n_estimators,
-                "max_samples": config.detectors.isolation_forest.max_samples,
-                "random_state": config.detectors.isolation_forest.random_state,
-            },
-            "lof": {
-                "enabled": config.detectors.lof.enabled,
-                "n_neighbors": config.detectors.lof.n_neighbors,
-                "contamination": config.detectors.lof.contamination,
-                "metric": config.detectors.lof.metric,
-            },
-            "graph": {
-                "enabled": config.detectors.graph.enabled,
-                "similarity_threshold": config.detectors.graph.similarity_threshold,
-                "min_community_size": config.detectors.graph.min_community_size,
-                "use_betweenness": config.detectors.graph.use_betweenness,
-                "betweenness_threshold": config.detectors.graph.betweenness_threshold,
-            },
-        },
-        "ensemble": {
-            "strategy": config.ensemble.strategy,
-            "threshold": config.ensemble.threshold,
-            "voting_threshold": config.ensemble.voting_threshold,
-            "weights": config.ensemble.weights,
-        },
-        "logging": {
-            "level": config.logging.level,
-            "format": config.logging.format,
-            "log_file": config.logging.log_file,
-            "log_metrics": config.logging.log_metrics,
-        },
-        "data": {
-            "num_records": config.data.num_records,
-            "fraud_ratio": config.data.fraud_ratio,
-            "seed": config.data.seed,
-            "locale": config.data.locale,
-            "input_path": config.data.input_path,
-            "output_path": config.data.output_path,
-        },
-    }
-    
     path = Path(config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    
+
+    config_dict = config.model_dump()
+
     with open(path, "w") as f:
         yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
 
 def get_default_config() -> FraudDetectionConfig:
-    """Get default configuration."""
+    """Get default configuration.
+
+    Returns:
+        FraudDetectionConfig with default values.
+    """
     return FraudDetectionConfig()
 
 
@@ -319,4 +372,15 @@ if __name__ == "__main__":
     print(f"  DBSCAN eps: {config.detectors.dbscan.eps}")
     print(f"  IF contamination: {config.detectors.isolation_forest.contamination}")
     print(f"  Ensemble strategy: {config.ensemble.strategy}")
+    print(f"  Ensemble threshold: {config.ensemble.threshold}")
     print(f"  Data seed: {config.data.seed}")
+    print(f"  Paths data_dir: {config.paths.data_dir}")
+
+    # Test validation
+    print("\nTesting validation...")
+    try:
+        config.detectors.dbscan.eps = 1.5  # Should fail
+    except Exception as e:
+        print(f"  Validation caught invalid eps: {type(e).__name__}")
+
+    print("\nConfiguration test complete.")

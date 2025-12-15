@@ -7,13 +7,15 @@ string analysis, phonetic encoding, cross-field analysis, and entropy metrics.
 
 import math
 import re
-import unicodedata
 from collections import Counter
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 import jellyfish
+
+from ..utils.text import normalize_text as _normalize_text
+from ..utils.address import format_address, get_address_text
 
 
 class FeatureExtractor:
@@ -41,20 +43,11 @@ class FeatureExtractor:
         """
         self.compute_network_features = compute_network_features
         self._feature_names: list[str] = []
-        
+    
     @staticmethod
     def normalize_text(text: str) -> str:
-        """Normalize text for comparison."""
-        if pd.isna(text) or not isinstance(text, str):
-            return ""
-        
-        text = text.lower()
-        text = unicodedata.normalize('NFKD', text)
-        text = ''.join(c for c in text if not unicodedata.combining(c))
-        text = re.sub(r'[^a-z0-9\s]', '', text)
-        text = ' '.join(text.split())
-        
-        return text
+        """Normalize text for comparison. Uses shared utility."""
+        return _normalize_text(text)
     
     @staticmethod
     def calculate_entropy(text: str) -> float:
@@ -114,24 +107,9 @@ class FeatureExtractor:
             return ""
         return re.sub(r"\s+", "", str(iban)).upper()
 
-    @staticmethod
-    def format_address(strasse: str, hausnummer: str, plz: str, stadt: str) -> str:
-        """Format a simple address string from structured fields."""
-        street_part = " ".join(p for p in [str(strasse or "").strip(), str(hausnummer or "").strip()] if p)
-        city_part = " ".join(p for p in [str(plz or "").strip(), str(stadt or "").strip()] if p)
-        if street_part and city_part:
-            return f"{street_part}, {city_part}"
-        return street_part or city_part
-
     def _get_address_text(self, row: pd.Series) -> str:
-        """Prefer structured address fields; fall back to legacy `address`."""
-        strasse = self._safe_str(row.get("strasse", "")).strip()
-        hausnummer = self._safe_str(row.get("hausnummer", "")).strip()
-        plz = self._safe_str(row.get("plz", "")).strip()
-        stadt = self._safe_str(row.get("stadt", "")).strip()
-        if any([strasse, hausnummer, plz, stadt]):
-            return self.format_address(strasse, hausnummer, plz, stadt)
-        return self._safe_str(row.get("address", "")).strip()
+        """Get formatted address text from row. Uses shared utility."""
+        return get_address_text(row)
 
     @staticmethod
     def _is_all_same(text: str) -> int:

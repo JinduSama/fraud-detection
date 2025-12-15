@@ -1,32 +1,19 @@
-"""
-Fraud Pattern Injector.
+"""Fraud Pattern Injector.
 
 Injects specific fraud patterns into synthetic customer data to create
 realistic anomalies for testing fraud detection algorithms.
-
-TASK-003: Implement src/data/fraud_injector.py to inject specific fraud patterns.
 """
 
 import random
 import re
 import string
 from dataclasses import replace
-from enum import Enum
 from typing import Optional
 
 from faker import Faker
 
 from .generator import CustomerRecord
-
-
-class FraudType(Enum):
-    """Types of fraud patterns that can be injected."""
-    
-    NEAR_DUPLICATE = "near_duplicate"       # Same address, different name
-    TYPO_VARIANT = "typo_variant"           # Slight variations in name/email
-    SHARED_IBAN = "shared_iban"             # Multiple accounts with same IBAN
-    SYNTHETIC_IDENTITY = "synthetic_identity"  # Mix of real and fake data
-    ADDRESS_MANIPULATION = "address_manipulation"  # Slight address changes
+from .fraud_patterns import FraudType
 
 
 class FraudInjector:

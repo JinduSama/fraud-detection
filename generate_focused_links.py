@@ -349,4 +349,17 @@ def generate_focused_links_report(
 
 
 if __name__ == "__main__":
-    generate_focused_links_report()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate linked pairs reports")
+    parser.add_argument("--config", type=str, help="Path to config file")
+    parser.add_argument("--input", type=str, help="Override input file path")
+    parser.add_argument("--output-dir", type=str, help="Override output directory")
+    args = parser.parse_args()
+    
+    cfg = load_config(args.config) if args.config else None
+    generate_focused_links_report(
+        config=cfg,
+        detected_path=args.input,
+        output_dir=args.output_dir,
+    )

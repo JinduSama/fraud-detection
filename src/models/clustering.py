@@ -3,8 +3,6 @@ Fraud Detection Clustering Module.
 
 Implements DBSCAN-based clustering with custom string distance metrics
 for identifying suspicious patterns in customer data.
-
-TASK-006: Implement src/models/clustering.py with DBSCAN and string similarity.
 """
 
 from dataclasses import dataclass
@@ -12,10 +10,10 @@ from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
-import jellyfish
 from sklearn.cluster import DBSCAN
 
 from .preprocessing import DataPreprocessor
+from ..utils.text import StringDistanceMetrics
 
 
 @dataclass
@@ -27,58 +25,6 @@ class SuspiciousCluster:
     customer_ids: list[str]
     similarity_score: float
     detection_reason: str
-
-
-class StringDistanceMetrics:
-    """
-    Collection of string distance/similarity metrics for fraud detection.
-    
-    All methods return a distance (0 = identical, 1 = completely different).
-    """
-    
-    @staticmethod
-    def jaro_winkler_distance(s1: str, s2: str) -> float:
-        """
-        Jaro-Winkler distance between two strings.
-        
-        Good for detecting typos and minor variations in names.
-        """
-        if not s1 or not s2:
-            return 1.0
-        similarity = jellyfish.jaro_winkler_similarity(s1, s2)
-        return 1.0 - similarity
-    
-    @staticmethod
-    def levenshtein_distance_normalized(s1: str, s2: str) -> float:
-        """
-        Normalized Levenshtein distance (0-1 range).
-        
-        Number of edits needed, normalized by max string length.
-        """
-        if not s1 and not s2:
-            return 0.0
-        if not s1 or not s2:
-            return 1.0
-        
-        distance = jellyfish.levenshtein_distance(s1, s2)
-        max_len = max(len(s1), len(s2))
-        return distance / max_len
-    
-    @staticmethod
-    def damerau_levenshtein_normalized(s1: str, s2: str) -> float:
-        """
-        Normalized Damerau-Levenshtein distance.
-        
-        Like Levenshtein but also considers transpositions.
-        """
-        if not s1 and not s2:
-            return 0.0
-        if not s1 or not s2:
-            return 1.0
-        
-        distance = jellyfish.damerau_levenshtein_distance(s1, s2)
-        max_len = max(len(s1), len(s2))
-        return distance / max_len
 
 
 class FraudDetector:

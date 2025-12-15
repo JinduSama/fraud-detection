@@ -1,10 +1,8 @@
-"""
-Fraud Detection Pipeline Script.
+"""Fraud Detection Pipeline Script.
 
 Main script that takes CSV input, runs the ensemble detection algorithm,
 and outputs flagged records with explanations.
 
-TASK-007: Develop pipeline that takes CSV input and outputs suspicious clusters.
 Enhanced with ensemble detection, explainability, and configuration support.
 """
 
@@ -97,7 +95,6 @@ def detect_fraud(
     fusion_strategy: str = "weighted_avg",
     threshold: float = 0.5,
     explain: bool = False,
-    use_ensemble: bool = True,
     logger: Optional[FraudLogger] = None,
 ) -> pd.DataFrame:
     """
@@ -115,7 +112,6 @@ def detect_fraud(
         fusion_strategy: Ensemble fusion strategy.
         threshold: Decision threshold for fraud classification.
         explain: Whether to generate explanations for flagged records.
-        use_ensemble: Whether to use ensemble (True) or legacy detector (False).
         logger: Logger instance.
         
     Returns:
@@ -151,145 +147,121 @@ def detect_fraud(
     log.stop_timer("data_loading")
     print(f"       Loaded {len(df)} records")
     
-    if use_ensemble:
-        # Use new ensemble detector
-        print(f"\n[2/5] Initializing ensemble detector...")
-        enabled_detectors = []
-        if config.detectors.dbscan.enabled:
-            enabled_detectors.append("DBSCAN")
-        if config.detectors.isolation_forest.enabled:
-            enabled_detectors.append("IsolationForest")
-        if config.detectors.lof.enabled:
-            enabled_detectors.append("LOF")
-        if config.detectors.graph.enabled:
-            enabled_detectors.append("Graph")
+    # Use ensemble detector
+    print(f"\n[2/5] Initializing ensemble detector...")
+    enabled_detectors = []
+    if config.detectors.dbscan.enabled:
+        enabled_detectors.append("DBSCAN")
+    if config.detectors.isolation_forest.enabled:
+        enabled_detectors.append("IsolationForest")
+    if config.detectors.lof.enabled:
+        enabled_detectors.append("LOF")
+    if config.detectors.graph.enabled:
+        enabled_detectors.append("Graph")
+    
+    print(f"      - Detectors: {', '.join(enabled_detectors)}")
+    print(f"      - Fusion strategy: {fusion_strategy}")
+    print(f"      - Threshold: {threshold}")
+    
+    ensemble = create_ensemble_from_config(config)
+    
+    # Fit and predict
+    print(f"\n[3/5] Running fraud detection...")
+    log.start_timer("detection")
+    ensemble.fit(df)
+    result_df = ensemble.predict(df)
+    detection_time = log.stop_timer("detection")
+    
+    # Add results to original DataFrame
+    df_result = df.copy()
+    df_result["detected_fraud"] = result_df["is_fraud"]
+    df_result["fraud_score"] = result_df["score"]
+    df_result["detection_reason"] = result_df["reason"]
+    
+    # Add linked records information
+    df_result["linked_records"] = ""
+    df_result["cluster_id"] = -1
+    
+    # Extract cluster/community memberships from detectors
+    for detector, _ in ensemble.detectors:
+        if hasattr(detector, 'clusters') and detector.clusters:
+            for cluster in detector.clusters:
+                for idx in cluster.record_indices:
+                    if idx < len(df_result):
+                        # Get other customer IDs in this cluster
+                        other_ids = [
+                            df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
+                            for i in cluster.record_indices if i != idx
+                        ]
+                        if other_ids:
+                            current_linked = df_result.at[idx, "linked_records"]
+                            new_linked = "; ".join(other_ids[:5])  # Limit to 5
+                            if current_linked:
+                                df_result.at[idx, "linked_records"] = f"{current_linked}; {new_linked}"
+                            else:
+                                df_result.at[idx, "linked_records"] = new_linked
+                        df_result.at[idx, "cluster_id"] = cluster.cluster_id
         
-        print(f"      - Detectors: {', '.join(enabled_detectors)}")
-        print(f"      - Fusion strategy: {fusion_strategy}")
-        print(f"      - Threshold: {threshold}")
-        
-        ensemble = create_ensemble_from_config(config)
-        
-        # Fit and predict
-        print(f"\n[3/5] Running fraud detection...")
-        log.start_timer("detection")
-        ensemble.fit(df)
-        result_df = ensemble.predict(df)
-        detection_time = log.stop_timer("detection")
-        
-        # Add results to original DataFrame
-        df_result = df.copy()
-        df_result["detected_fraud"] = result_df["is_fraud"]
-        df_result["fraud_score"] = result_df["score"]
-        df_result["detection_reason"] = result_df["reason"]
-        
-        # Add linked records information
-        df_result["linked_records"] = ""
-        df_result["cluster_id"] = -1
-        
-        # Extract cluster/community memberships from detectors
-        for detector, _ in ensemble.detectors:
-            if hasattr(detector, 'clusters') and detector.clusters:
-                for cluster in detector.clusters:
-                    for idx in cluster.record_indices:
-                        if idx < len(df_result):
-                            # Get other customer IDs in this cluster
-                            other_ids = [
-                                df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
-                                for i in cluster.record_indices if i != idx
-                            ]
-                            if other_ids:
-                                current_linked = df_result.at[idx, "linked_records"]
-                                new_linked = "; ".join(other_ids[:5])  # Limit to 5
+        # Also check for graph communities
+        if hasattr(detector, 'communities') and detector.communities:
+            for comm_id, indices in enumerate(detector.communities):
+                for idx in indices:
+                    if idx < len(df_result):
+                        other_ids = [
+                            df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
+                            for i in indices if i != idx
+                        ]
+                        if other_ids:
+                            current_linked = df_result.at[idx, "linked_records"]
+                            new_linked = "; ".join(other_ids[:5])
+                            if current_linked:
+                                df_result.at[idx, "linked_records"] = f"{current_linked}; {new_linked}"
+                            else:
+                                df_result.at[idx, "linked_records"] = new_linked
+    
+    # Also add shared IBAN links for any flagged records
+    if "iban" in df.columns:
+        iban_groups = df.groupby("iban").groups
+        for iban, indices in iban_groups.items():
+            if len(indices) > 1:
+                for idx in indices:
+                    if idx < len(df_result) and df_result.at[idx, "detected_fraud"]:
+                        other_ids = [
+                            df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
+                            for i in indices if i != idx
+                        ]
+                        current_linked = str(df_result.at[idx, "linked_records"])
+                        # Avoid duplicates
+                        for oid in other_ids:
+                            if oid not in current_linked:
                                 if current_linked:
-                                    df_result.at[idx, "linked_records"] = f"{current_linked}; {new_linked}"
+                                    current_linked = f"{current_linked}; {oid}"
                                 else:
-                                    df_result.at[idx, "linked_records"] = new_linked
-                            df_result.at[idx, "cluster_id"] = cluster.cluster_id
-            
-            # Also check for graph communities
-            if hasattr(detector, 'communities') and detector.communities:
-                for comm_id, indices in enumerate(detector.communities):
-                    for idx in indices:
-                        if idx < len(df_result):
-                            other_ids = [
-                                df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
-                                for i in indices if i != idx
-                            ]
-                            if other_ids:
-                                current_linked = df_result.at[idx, "linked_records"]
-                                new_linked = "; ".join(other_ids[:5])
-                                if current_linked:
-                                    df_result.at[idx, "linked_records"] = f"{current_linked}; {new_linked}"
-                                else:
-                                    df_result.at[idx, "linked_records"] = new_linked
+                                    current_linked = oid
+                        df_result.at[idx, "linked_records"] = current_linked
+    
+    # Generate explanations if requested
+    if explain:
+        print(f"\n[4/5] Generating explanations...")
+        explainer = FraudExplainer(ensemble)
+        flagged_indices = df_result[df_result["detected_fraud"]].index.tolist()
         
-        # Also add shared IBAN links for any flagged records
-        if "iban" in df.columns:
-            iban_groups = df.groupby("iban").groups
-            for iban, indices in iban_groups.items():
-                if len(indices) > 1:
-                    for idx in indices:
-                        if idx < len(df_result) and df_result.at[idx, "detected_fraud"]:
-                            other_ids = [
-                                df.iloc[i]["customer_id"] if "customer_id" in df.columns else f"row_{i}"
-                                for i in indices if i != idx
-                            ]
-                            current_linked = str(df_result.at[idx, "linked_records"])
-                            # Avoid duplicates
-                            for oid in other_ids:
-                                if oid not in current_linked:
-                                    if current_linked:
-                                        current_linked = f"{current_linked}; {oid}"
-                                    else:
-                                        current_linked = oid
-                            df_result.at[idx, "linked_records"] = current_linked
+        explanations = []
+        for idx in flagged_indices[:100]:  # Limit to 100 for performance
+            exp = ensemble.explain(df, idx)
+            explanations.append(exp)
         
-        # Generate explanations if requested
-        if explain:
-            print(f"\n[4/5] Generating explanations...")
-            explainer = FraudExplainer(ensemble)
-            flagged_indices = df_result[df_result["detected_fraud"]].index.tolist()
-            
-            explanations = []
-            for idx in flagged_indices[:100]:  # Limit to 100 for performance
-                exp = ensemble.explain(df, idx)
-                explanations.append(exp)
-            
-            # Save explanations
-            explanation_path = Path(output_path).parent / "explanations.json"
-            import json
-            with open(explanation_path, "w") as f:
-                json.dump(explanations, f, indent=2, default=str)
-            print(f"       Saved {len(explanations)} explanations to {explanation_path}")
-        else:
-            print(f"\n[4/5] Skipping explanations (use --explain to enable)")
-        
-        num_clusters = sum(1 for d, _ in ensemble.detectors 
-                          if hasattr(d, 'clusters') and d.clusters)
+        # Save explanations
+        explanation_path = Path(output_path).parent / "explanations.json"
+        import json
+        with open(explanation_path, "w") as f:
+            json.dump(explanations, f, indent=2, default=str)
+        print(f"       Saved {len(explanations)} explanations to {explanation_path}")
     else:
-        # Use legacy DBSCAN detector
-        print(f"\n[2/5] Initializing legacy fraud detector...")
-        print(f"      - Distance metric: {distance_metric}")
-        print(f"      - DBSCAN eps: {eps}")
-        print(f"      - Min samples: {min_samples}")
-        print(f"      - Use blocking: {use_blocking}")
-        
-        detector = FraudDetector(
-            eps=eps,
-            min_samples=min_samples,
-            distance_metric=distance_metric
-        )
-        
-        print(f"\n[3/5] Running fraud detection...")
-        log.start_timer("detection")
-        clusters = detector.detect_clusters(df, use_blocking=use_blocking)
-        detection_time = log.stop_timer("detection")
-        
-        df_result = detector.get_flagged_records(df)
-        num_clusters = len(clusters)
-        
-        print(f"\n[4/5] Legacy mode - explanations not available")
+        print(f"\n[4/5] Skipping explanations (use --explain to enable)")
+    
+    num_clusters = sum(1 for d, _ in ensemble.detectors 
+                      if hasattr(d, 'clusters') and d.clusters)
     
     # Save results
     print(f"\n[5/5] Saving results to {output_path}...")
@@ -393,11 +365,6 @@ def main():
         action="store_true",
         help="Generate explanations for flagged records"
     )
-    parser.add_argument(
-        "--legacy",
-        action="store_true",
-        help="Use legacy single-detector mode"
-    )
     
     args = parser.parse_args()
     
@@ -413,7 +380,6 @@ def main():
         fusion_strategy=args.fusion_strategy,
         threshold=args.threshold,
         explain=args.explain,
-        use_ensemble=not args.legacy,
     )
 
 

@@ -1,10 +1,7 @@
-"""
-Dataset Generation Script.
+"""Dataset Generation Script.
 
 Main script that combines legitimate and fraudulent data generation,
 labels the ground truth, and saves to CSV.
-
-TASK-004: Create main script that combines legitimate and fraudulent data.
 """
 
 import argparse

@@ -16,6 +16,7 @@ dependencies = [
     "matplotlib>=3.8.0",
     # Configuration
     "pyyaml>=6.0.0",
+    "pydantic>=2.5.0",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,6 @@ dependencies = [
 full = [
     "shap>=0.44.0",           # Explainability
     "networkx>=3.2",          # Graph analysis
-    "pydantic>=2.5.0",        # Config validation
     "structlog>=24.0.0",      # Structured logging
     "psutil>=5.9.0",          # Memory monitoring
 ]

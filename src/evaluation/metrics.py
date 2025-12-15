@@ -1,10 +1,7 @@
-"""
-Evaluation Metrics Module.
+"""Evaluation Metrics Module.
 
 Calculates Precision, Recall, and F1-Score for fraud detection
 by comparing detected clusters against ground truth labels.
-
-TASK-008: Implement src/evaluation/metrics.py for classification metrics.
 """
 
 from dataclasses import dataclass
