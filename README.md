@@ -1,6 +1,37 @@
 # Fraud Detection Synthetic Data Project
 
-A Python-based fraud detection prototype for telecommunications that generates synthetic customer data with injected fraud patterns and uses **ensemble machine learning** and clustering-based detection algorithms to identify suspicious records.
+A Python-based fraud detection prototype that generates synthetic customer data with injected fraud patterns and uses **ensemble machine learning** to identify suspicious records.
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Detectors & Strategies](#detectors)
+- [Testing](#testing)
+- [Project Structure](#project-structure)
+- [API Usage](#api-usage)
+
+---
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+uv sync
+
+# 2. Run the complete pipeline (generate → detect → evaluate)
+uv run python -m src.evaluate
+
+# 3. View results
+cat data/evaluation_report.txt
+```
+
+That's it! The pipeline will generate synthetic data, run fraud detection, and output performance metrics.
+
+---
 
 ## Features
 
@@ -15,80 +46,87 @@ A Python-based fraud detection prototype for telecommunications that generates s
 
 ```
 fraud-detection-synthetic/
-├── pyproject.toml              # Project configuration and dependencies
+├── pyproject.toml              # Project config & dependencies
 ├── README.md                   # This file
 ├── config/
-│   └── default.yaml            # Default configuration
+│   └── default.yaml            # Default configuration (paths, detector params)
 ├── src/
-│   ├── __init__.py
-│   ├── config.py               # Configuration management
-│   ├── generate_dataset.py     # Main data generation script
+│   ├── config.py               # Pydantic v2 configuration with validation
+│   ├── generate_dataset.py     # Synthetic data generation
 │   ├── detect_fraud.py         # Fraud detection pipeline
 │   ├── evaluate.py             # Full pipeline with evaluation
+│   ├── sweep.py                # Parameter sweep for tuning
 │   ├── data/
-│   │   ├── __init__.py
 │   │   ├── generator.py        # Synthetic customer data generator
 │   │   ├── fraud_injector.py   # Fraud pattern injection
-│   │   └── fraud_patterns.py   # Extended fraud patterns
+│   │   └── fraud_patterns.py   # Fraud type definitions (FraudType enum)
 │   ├── models/
-│   │   ├── __init__.py
 │   │   ├── base.py             # BaseDetector abstract class
 │   │   ├── features.py         # Feature engineering (36 features)
 │   │   ├── preprocessing.py    # Data cleaning
-│   │   ├── clustering.py       # Legacy DBSCAN clustering
-│   │   ├── ensemble.py         # Ensemble detector with fusion
+│   │   ├── clustering.py       # DBSCAN clustering with string similarity
+│   │   ├── ensemble.py         # Ensemble detector with fusion strategies
 │   │   ├── explainer.py        # SHAP-based explainability
 │   │   └── detectors/
-│   │       ├── __init__.py
-│   │       ├── isolation_forest.py  # Isolation Forest detector
-│   │       ├── lof.py               # Local Outlier Factor detector
-│   │       ├── dbscan.py            # DBSCAN with sparse matrices
-│   │       └── graph.py             # Graph-based community detection
+│   │       ├── isolation_forest.py
+│   │       ├── lof.py
+│   │       ├── dbscan.py
+│   │       └── graph.py
 │   ├── evaluation/
-│   │   ├── __init__.py
-│   │   └── metrics.py          # Evaluation metrics
+│   │   └── metrics.py          # Precision, Recall, F1, confusion matrix
 │   └── utils/
-│       ├── __init__.py
+│       ├── text.py             # Shared text normalization & string distances
+│       ├── address.py          # Address normalization utilities
 │       └── logging.py          # Structured logging
-├── data/                       # Output directory (created at runtime)
-│   ├── customer_dataset.csv    # Generated dataset
-│   ├── detected_fraud.csv      # Detection results
-│   ├── explanations.json       # SHAP explanations
-│   └── evaluation_report.txt   # Performance report
-└── test_features.py            # Feature test script
+├── tests/                      # Test suite
+│   ├── conftest.py             # Shared pytest fixtures
+│   ├── test_config.py          # Configuration validation tests
+│   ├── test_utils.py           # Utility function tests
+│   ├── test_evaluation/
+│   │   └── test_metrics.py     # Metrics calculation tests
+│   └── test_integration/
+│       └── test_pipeline.py    # End-to-end detector tests
+└── data/                       # Output directory (created at runtime)
+    ├── customer_dataset.csv
+    ├── detected_fraud.csv
+    ├── explanations.json
+    └── evaluation_report.txt
 ```
 
 ## Installation
 
-### Prerequisites
-
-- Python 3.10+
-- uv package manager
-
-### Setup
+**Prerequisites:** Python 3.10+ and [uv](https://docs.astral.sh/uv/) package manager
 
 ```bash
-# Initialize with uv
+# Clone and install
+git clone <repository-url>
+cd agents
 uv sync
-
-# Or install dependencies manually
-uv pip install faker pandas numpy scikit-learn jellyfish scipy pyyaml
-
-# Optional dependencies for full functionality
-uv pip install shap networkx structlog pydantic
 ```
+
+This installs all dependencies including Pydantic v2 for configuration validation.
 
 ## Usage
 
-### Quick Start - Full Pipeline
-
-Run the complete pipeline (generate → detect → evaluate):
+### Full Pipeline
 
 ```bash
+# Run complete pipeline: generate data → detect fraud → evaluate
 uv run python -m src.evaluate
+
+# With custom parameters
+uv run python -m src.evaluate --num-records 500 --fraud-ratio 0.2
 ```
 
-### Parameter + Seed Sweep (Stability / Tuning)
+### Step-by-Step Pipeline
+
+| Step | Command | Output |
+|------|---------|--------|
+| 1. Generate Data | `uv run python -m src.generate_dataset` | `data/customer_dataset.csv` |
+| 2. Detect Fraud | `uv run python -m src.detect_fraud` | `data/detected_fraud.csv` |
+| 3. Evaluate | `uv run python -m src.evaluate` | `data/evaluation_report.txt` |
+
+### Parameter Sweep (Tuning)
 
 Run a small grid over multiple random seeds and parameter settings and export a CSV summary:
 
@@ -138,57 +176,48 @@ uv run python -m src.sweep \
   --output data/sweeps/sweep_results.csv
 ```
 
-### Individual Components
-
-#### 1. Generate Synthetic Dataset
+### Generate Synthetic Dataset
 
 ```bash
 uv run python -m src.generate_dataset --num-records 1000 --fraud-ratio 0.15
 ```
 
-Options:
-- `-n, --num-records`: Number of legitimate records (default: 1000)
-- `-f, --fraud-ratio`: Ratio of fraudulent records (default: 0.15)
-- `-s, --seed`: Random seed for reproducibility (default: 42)
-- `-o, --output`: Output CSV path (default: data/customer_dataset.csv)
-- `-l, --locale`: Faker locale (default: de_DE)
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-n, --num-records` | Number of legitimate records | 1000 |
+| `-f, --fraud-ratio` | Ratio of fraudulent records | 0.15 |
+| `-s, --seed` | Random seed for reproducibility | 42 |
+| `-o, --output` | Output CSV path | `data/customer_dataset.csv` |
+| `-l, --locale` | Faker locale | `de_DE` |
 
-#### 2. Run Fraud Detection
+### Run Fraud Detection
 
 ```bash
 # Basic detection with ensemble (default)
 uv run python -m src.detect_fraud --input data/customer_dataset.csv
 
 # Single detector
-uv run python -m src.detect_fraud --input data/customer_dataset.csv --detectors isolation_forest
+uv run python -m src.detect_fraud --detectors isolation_forest
 
 # Multiple detectors with custom fusion
-uv run python -m src.detect_fraud --input data/customer_dataset.csv \
-    --detectors dbscan isolation_forest lof \
-    --fusion-strategy voting
+uv run python -m src.detect_fraud --detectors dbscan isolation_forest lof --fusion-strategy voting
 
 # With SHAP explanations
-uv run python -m src.detect_fraud --input data/customer_dataset.csv --explain
+uv run python -m src.detect_fraud --explain
 ```
 
-Options:
-- `-i, --input`: Input CSV file path
-- `-o, --output`: Output CSV file path
-- `-e, --eps`: DBSCAN epsilon (default: 0.35)
-- `-m, --min-samples`: Minimum cluster size (default: 2)
-- `--no-blocking`: Disable blocking optimization
-- `-d, --distance-metric`: jaro_winkler, levenshtein, or damerau
-- `--detectors`: Detector(s) to use: dbscan, isolation_forest, lof, graph
-- `--fusion-strategy`: Ensemble fusion: max, weighted_avg, voting, stacking
-- `--threshold`: Detection threshold (default: 0.5)
-- `--explain`: Generate SHAP explanations for flagged records
-- `--config`: Path to YAML configuration file
+**Key Options:**
 
-#### 3. Run Full Pipeline with Evaluation
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--detectors` | Detectors to use: `dbscan`, `isolation_forest`, `lof`, `graph` | all |
+| `--fusion-strategy` | Ensemble fusion: `max`, `weighted_avg`, `voting`, `stacking` | `weighted_avg` |
+| `--threshold` | Detection threshold (0.0-1.0) | 0.5 |
+| `--eps` | DBSCAN epsilon | 0.35 |
+| `--explain` | Generate SHAP explanations | false |
+| `--config` | Path to YAML config file | `config/default.yaml` |
 
-```bash
-uv run python -m src.evaluate --num-records 500 --fraud-ratio 0.2
-```
+---
 
 ## Detectors
 
@@ -266,19 +295,26 @@ Example explanation:
 
 ## Configuration
 
-### YAML Configuration
+Configuration is managed via YAML files with **Pydantic v2 validation**. Invalid settings raise clear errors at startup.
 
-Create a custom config file:
+### Configuration File
 
 ```yaml
-# config/custom.yaml
+# config/default.yaml
+paths:
+  data_dir: "data"
+  detected_fraud: "data/detected_fraud.csv"
+  customer_dataset: "data/customer_dataset.csv"
+  evaluation_report: "data/evaluation_report.txt"
+
 dbscan:
-  eps: 0.35
+  eps: 0.35                    # 0.0-1.0, validated
   min_samples: 2
+  distance_metric: jaro_winkler  # jaro_winkler | levenshtein | damerau
   use_blocking: true
 
 isolation_forest:
-  contamination: 0.1
+  contamination: "0.1"         # "auto" or float 0.0-0.5
   n_estimators: 100
   random_state: 42
 
@@ -287,22 +323,29 @@ lof:
   contamination: 0.1
 
 graph:
+  enabled: true
   similarity_threshold: 0.7
   min_community_size: 3
 
 ensemble:
-  strategy: weighted_avg
-  threshold: 0.5
+  strategy: weighted_avg        # max | weighted_avg | voting | stacking
+  threshold: 0.5                # 0.0-1.0, validated
   weights:
     dbscan: 0.3
     isolation_forest: 0.4
     lof: 0.2
-    graph: 0.1
+    graph: 0.1                  # negative weights raise error
 ```
 
-Use it:
+### Environment Variable Overrides
+
+Override any setting via environment variables:
+
 ```bash
-uv run python -m src.detect_fraud --config config/custom.yaml --input data/customer_dataset.csv
+# Format: FRAUD_DETECTION__<SECTION>__<KEY>
+export FRAUD_DETECTION__DBSCAN__EPS=0.4
+export FRAUD_DETECTION__ENSEMBLE__THRESHOLD=0.6
+uv run python -m src.detect_fraud
 ```
 
 ### Tuning Detection Sensitivity
@@ -359,18 +402,32 @@ Detection Rate by Fraud Type:
 
 ## Testing
 
-Run the feature test suite:
+The project includes a comprehensive test suite with 62 tests:
 
 ```bash
-# Run all feature tests
-uv run python test_features.py
+# Run all tests
+uv run pytest tests/ -v
 
-# Test individual detectors
-uv run python -c "
-from src.models import IsolationForestDetector, DBSCANDetector, EnsembleDetector
-print('Imports successful!')
-"
+# Run specific test categories
+uv run pytest tests/test_config.py -v      # Configuration validation
+uv run pytest tests/test_utils.py -v        # Utility functions
+uv run pytest tests/test_evaluation/ -v     # Metrics calculation
+uv run pytest tests/test_integration/ -v    # End-to-end pipeline
+
+# Run with coverage
+uv run pytest tests/ --cov=src --cov-report=html
 ```
+
+### Test Structure
+
+| Test File | Coverage |
+|-----------|----------|
+| `test_config.py` | Pydantic validation, env overrides, path config |
+| `test_utils.py` | Text normalization, string distances, address utilities |
+| `test_evaluation/test_metrics.py` | Precision, recall, F1, confusion matrix |
+| `test_integration/test_pipeline.py` | All detectors, ensemble, feature extraction |
+
+---
 
 ## API Usage
 
